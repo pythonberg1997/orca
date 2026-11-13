@@ -1,7 +1,6 @@
 // Antigravity chats run Orca's managed ACP server, or the host's own `agy acp` when compatible.
 
 import { join } from 'node:path'
-import { homedir } from 'node:os'
 import type { AcpLaunchSpec } from '../acp/launch/acp-launch-contract'
 import { ANTIGRAVITY_ACP_DIALECT } from '../acp/acp-dialects/antigravity-dialect'
 import type { StructuredAgentSessionHistory } from '../native-chat/conversation-adoption/structured-agent-cli-conversations'
@@ -10,6 +9,7 @@ import {
   resolveAntigravityChatAuthConfig
 } from '../../shared/antigravity-chat-auth-config'
 import { agentSessionSetupFor } from '../../shared/agent-session/lifecycle/agent-session-setup-commands'
+import { observeAntigravityAcpBrainSession } from './antigravity-acp-brain-observer'
 import { ANTIGRAVITY_ACP_COMMAND, ANTIGRAVITY_ACP_RUNTIME } from './antigravity-acp-runtime'
 import { ANTIGRAVITY_ACP_ENV, scrubAntigravityAcpEnvironment } from './antigravity-acp-environment'
 import {
@@ -20,8 +20,13 @@ import {
 } from './antigravity-chat-account'
 import { ANTIGRAVITY_CHAT_HOME_FOLDER } from './antigravity-chat-home'
 import { assertAntigravityChatAuthPublished } from './antigravity-chat-auth-publication'
+import { antigravityUserHome } from './antigravity-chat-user-skills'
 import { readAntigravitySignInLine } from './antigravity-sign-in-url'
 import { antigravityChatRulesMeta } from './antigravity-chat-rules'
+import {
+  ANTIGRAVITY_MODEL_LISTING_ARGS,
+  parseAntigravityModelListing
+} from './antigravity-model-catalog'
 import {
   AGY_SKIP_PERMISSIONS_FLAG,
   ANTIGRAVITY_HOST_ACP_MINIMUM_VERSION,
@@ -76,6 +81,7 @@ const ANTIGRAVITY_MANAGED_LAUNCH_SPEC = {
   // `session/load` replays the whole conversation, which the chat already holds.
   resumePreference: 'resume',
   resolveSessionMeta: antigravityChatRulesMeta,
+  observeSession: (input) => observeAntigravityAcpBrainSession({ ...input, managed: true }),
   launchGate: ANTIGRAVITY_LAUNCH_GATE
 } satisfies AcpLaunchSpec
 
@@ -101,8 +107,7 @@ const ANTIGRAVITY_HOST_LAUNCH_SPEC: AcpLaunchSpec = {
   dialect: { ...ANTIGRAVITY_ACP_DIALECT, signInAccount: 'system' },
   account: {
     pin: antigravityChatAccount.pin,
-    resolve: async ({ launchEnv }) =>
-      antigravityHostAccountHome(launchEnv.HOME ?? launchEnv.USERPROFILE ?? homedir()),
+    resolve: async ({ launchEnv }) => antigravityHostAccountHome(antigravityUserHome(launchEnv)),
     environment: (home, env) => {
       if (!isAntigravityHostAccountHome(home)) {
         throw new Error("this chat runs on the host's agy")
@@ -114,6 +119,13 @@ const ANTIGRAVITY_HOST_LAUNCH_SPEC: AcpLaunchSpec = {
   installDirectories: ({ homePath }) => [join(homePath, '.local', 'bin')],
   managedRuntime: undefined,
   resolveSessionMeta: undefined,
+  observeSession: (input) => observeAntigravityAcpBrainSession({ ...input, managed: false }),
+  modelDiscovery: {
+    kind: 'command',
+    args: ANTIGRAVITY_MODEL_LISTING_ARGS,
+    parse: parseAntigravityModelListing,
+    listingNamesConfiguredModel: false
+  },
   // agy has no full-access mode, so its launch flag grants it; plan approvals still reach the chat.
   permissionModeConfig: {
     values: { ask: 'default', 'accept-edits': 'accept-edits', 'full-access': 'default' },

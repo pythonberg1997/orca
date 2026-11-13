@@ -32,6 +32,8 @@ export abstract class AgentHookServerListeners extends AgentHookServerAgentIdent
   protected readonly programStatusFacets = new ProgramStatusFacetStore()
   /** Retry yielded OSC 7501 reports when hook precedence expires; programs may not resend. */
   protected readonly hookSilenceRechecks = new PaneTimers()
+  /** Retry yielded non-OSC screen status reports without colliding with OSC 7501 timers. */
+  protected readonly screenStatusSilenceRechecks = new PaneTimers()
   /** Coalesce facet-only ticks that arrive at PTY chunk rate. */
   protected readonly programStatusFacetRepublishes = new PaneTimers()
 

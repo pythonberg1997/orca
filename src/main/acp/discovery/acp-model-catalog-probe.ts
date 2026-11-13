@@ -19,6 +19,7 @@ import {
   acpModelListingForRelease
 } from './acp-model-discovery-policy'
 import type { AcpLaunchSpec } from '../launch/acp-launch-contract'
+import { acpLaunchSpecForAccount } from '../launch/acp-launch-command'
 import { checkAcpLaunchVersion } from '../launch/acp-launch-version'
 import {
   resolveAcpLaunchInvocation,
@@ -42,15 +43,16 @@ export type AcpModelCatalogProbeDeps = AcpLaunchInvocationDeps & {
 
 /** Uses the same binary, account and scrubbed environment as chats. */
 export function createAcpModelCatalogProbe(
-  spec: AcpLaunchSpec,
+  agentSpec: AcpLaunchSpec,
   deps: AcpModelCatalogProbeDeps
 ): AgentModelCatalogProbe {
   const probe: AgentModelCatalogProbe = async (accountHome, options) => {
     const operation = options?.operation ?? { signal: options?.signal }
     assertStructuredAgentResolutionCurrent(operation)
+    const spec = acpLaunchSpecForAccount(agentSpec, accountHome)
     const discovery = spec.modelDiscovery
     if (discovery.kind === 'unavailable') {
-      throw new Error(discovery.reason)
+      throw new AgentModelCatalogListingStoppedError(discovery.reason)
     }
     const workspace = options?.workspacePath
     // Reject folderless session discovery before spawning even a version probe.

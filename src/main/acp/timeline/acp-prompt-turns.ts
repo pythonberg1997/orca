@@ -22,6 +22,9 @@ export type AcpPromptTurn = {
 
 export const acpPromptTurnId = (clientMessageId: string): string => `prompt:${clientMessageId}`
 
+export const isAcpPromptTurnId = (turn: string | undefined): boolean =>
+  turn?.startsWith('prompt:') === true
+
 export class AcpPromptTurns {
   current?: AcpPromptTurn
   /** Retain the ended prompt so its reply can supply a late failure reason. */

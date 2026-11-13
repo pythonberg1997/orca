@@ -9,6 +9,7 @@ import type {
 import { AGENT_CHILD_WORK_ID_MAX_LENGTH } from '../../../shared/agent-status/child-work/agent-status-child-work-value-guards'
 import { MAX_SUBAGENT_FIELD_CHARS } from '../../../shared/native-chat/transcript/native-chat-subagent-summary'
 import type { NativeChatSubagentState } from '../../../shared/native-chat/native-chat-types'
+import { sliceAtCodeUnitLimit } from '../../../shared/surrogate-safe-text-slice'
 import { boundSubagentLabel } from '../../native-chat/agent-session-journal/item-lifecycle/journal-subagent-item'
 import type {
   ProviderTimelineJoin,
@@ -40,17 +41,63 @@ export function acpSubagentOutcome(
   return state === 'working' || state === 'idle' ? undefined : OUTCOMES[state]
 }
 
+const MAX_PROMPT_LABEL_CHARS = 80
+
+export function acpSubagentPromptLabel(prompt: string | undefined): string | undefined {
+  const line = prompt?.trim().split('\n')[0]?.trim()
+  if (!line) {
+    return undefined
+  }
+  return line.length > MAX_PROMPT_LABEL_CHARS
+    ? `${sliceAtCodeUnitLimit(line, MAX_PROMPT_LABEL_CHARS - 1)}…`
+    : line
+}
+
 export class AcpSubagents {
   private readonly known = new Map<string, KnownSubagent>()
+  private readonly aliases = new Map<string, string>()
+  private readonly unaliasedSpawns: string[] = []
+  private readonly pendingSpawnIds: string[] = []
+  private readonly deferredByPendingId = new Map<string, AcpSubagentUpdate[]>()
   private readonly pending: AgentChildWorkEvidence[] = []
 
   /** Include settled subagents so they cannot be reclassified as background tasks. */
   has(id: string): boolean {
-    return this.known.has(id)
+    return this.known.has(this.resolveId(id))
+  }
+
+  hasOpen(): boolean {
+    for (const subagent of this.known.values()) {
+      if (subagent.ended === undefined) {
+        return true
+      }
+    }
+    return false
+  }
+
+  /** Map a provider-minted child ID discovered out-of-band to the call-keyed spawn row. */
+  bindSpawnAlias(providerId: string): void {
+    if (
+      this.aliases.has(providerId) ||
+      this.known.has(providerId) ||
+      this.pendingSpawnIds.includes(providerId)
+    ) {
+      return
+    }
+    const target = this.unaliasedSpawns.shift()
+    if (target) {
+      this.aliases.set(providerId, target)
+      return
+    }
+    this.pendingSpawnIds.push(providerId)
   }
 
   dispose(): void {
     this.known.clear()
+    this.aliases.clear()
+    this.unaliasedSpawns.length = 0
+    this.pendingSpawnIds.length = 0
+    this.deferredByPendingId.clear()
     this.pending.length = 0
   }
 
@@ -73,10 +120,44 @@ export class AcpSubagents {
     at: number
   ): ProviderTimelineEvent[] {
     const replies: ProviderTimelineEvent[] = []
-    for (const update of updates) {
+    for (const rawUpdate of updates) {
+      if (
+        rawUpdate.allOpen &&
+        rawUpdate.state !== undefined &&
+        acpSubagentOutcome(rawUpdate.state)
+      ) {
+        for (const [id, subagent] of this.known) {
+          if (subagent.ended === undefined) {
+            subagent.ended = rawUpdate.state
+            this.pending.push(subagentEvidence({ id, state: rawUpdate.state }, at))
+          }
+        }
+        for (const providerId of this.pendingSpawnIds) {
+          const queued = this.deferredByPendingId.get(providerId) ?? []
+          queued.push({ id: providerId, state: rawUpdate.state, knownOnly: true })
+          this.deferredByPendingId.set(providerId, queued)
+        }
+        continue
+      }
+      const id = this.resolveId(rawUpdate.id)
+      const update = id === rawUpdate.id ? rawUpdate : { ...rawUpdate, id }
       const known = this.known.get(update.id)
       if (!known && update.knownOnly === true) {
+        if (this.pendingSpawnIds.includes(update.id)) {
+          const queued = this.deferredByPendingId.get(update.id) ?? []
+          queued.push(update)
+          this.deferredByPendingId.set(update.id, queued)
+        }
         continue
+      }
+      let boundProviderId: string | undefined
+      if (!known && update.awaitingAlias === true) {
+        boundProviderId = this.pendingSpawnIds.shift()
+        if (boundProviderId) {
+          this.aliases.set(boundProviderId, update.id)
+        } else {
+          this.unaliasedSpawns.push(update.id)
+        }
       }
       const turn = update.turn ?? join.turn
       const subagent = known ?? {
@@ -101,8 +182,19 @@ export class AcpSubagents {
       if (update.result && subagent.ended === 'completed') {
         replies.push(...this.reply(update.id, subagent, update.result))
       }
+      if (boundProviderId !== undefined) {
+        const deferred = this.deferredByPendingId.get(boundProviderId)
+        if (deferred) {
+          this.deferredByPendingId.delete(boundProviderId)
+          replies.push(...this.translate(deferred, join, at))
+        }
+      }
     }
     return replies
+  }
+
+  private resolveId(id: string): string {
+    return this.aliases.get(id) ?? id
   }
 
   private reply(id: string, subagent: KnownSubagent, text: string): ProviderTimelineEvent[] {

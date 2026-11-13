@@ -254,7 +254,7 @@ export const GROK_ACP_DIALECT: AcpDialect = {
       ? promptCompleteSchema.safeParse(params).data
       : undefined,
   contextWindow,
-  modelEfforts: grokModelEfforts,
+  modelEfforts: ({ modelInfo }) => (modelInfo ? grokModelEfforts(modelInfo) : undefined),
   builtinCommands: grokBuiltinCommands,
   hookBlock,
   promptErrorDetail: (error) => promptErrorDataSchema.safeParse(error.data).data?.message,

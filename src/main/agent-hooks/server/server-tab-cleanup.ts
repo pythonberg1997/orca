@@ -119,6 +119,7 @@ export abstract class AgentHookServerTabCleanup extends AgentHookServerCleanup {
       this.evidenceObservedAtByPaneKey.delete(paneKey)
       this.programStatusFacets.delete(paneKey)
       this.hookSilenceRechecks.cancel(paneKey)
+      this.screenStatusSilenceRechecks.cancel(paneKey)
       this.programStatusFacetRepublishes.cancel(paneKey)
     }
     // Exits outlive their rows; match tab identity independently of cleared status keys.
@@ -180,6 +181,7 @@ export abstract class AgentHookServerTabCleanup extends AgentHookServerCleanup {
     this.evidenceObservedAtByPaneKey.delete(resolvedPaneKey)
     this.programStatusFacets.delete(resolvedPaneKey)
     this.hookSilenceRechecks.cancel(resolvedPaneKey)
+    this.screenStatusSilenceRechecks.cancel(resolvedPaneKey)
     this.programStatusFacetRepublishes.cancel(resolvedPaneKey)
     let clearedAlias = false
     for (const [legacyPaneKey, alias] of this.legacyPaneKeyAliases) {

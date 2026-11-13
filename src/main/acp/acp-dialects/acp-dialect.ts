@@ -50,10 +50,20 @@ export type AcpSubagentUpdate = {
   result?: string
   /** Ambiguous task reports apply only to known subagents. */
   knownOnly?: true
+  /** Call-keyed spawn awaiting out-of-band provider child ID binding. */
+  awaitingAlias?: true
+  /** Apply `state` to every open subagent in this provider session (e.g. `kill_all`). */
+  allOpen?: true
   /** The provider started this subagent again; reopens it after an ending. */
   restart?: true
   /** The subagent that spawned this one; absent for the main agent's. */
   ownerId?: string
+}
+
+export type AcpModelEffortMenu = {
+  efforts: AgentSessionOptionChoice[]
+  defaultEffort?: string
+  declaredDefaultEffort?: string | null
 }
 
 /** A subagent's own report, relayed on its root session; it never opens or ends the root's turns. */
@@ -151,11 +161,12 @@ export type AcpDialect = {
     params: unknown
   ): { sessionId: string; promptId: string; stopReason: string } | undefined
   contextWindow?(models: unknown): number | undefined
-  modelEfforts?(model: ModelInfo): {
-    efforts: AgentSessionOptionChoice[]
-    defaultEffort?: string
-    declaredDefaultEffort?: string | null
-  }
+  modelEfforts?(input: {
+    modelId: string
+    modelInfo?: ModelInfo
+    availableModels?: readonly ModelInfo[]
+    hasModelConfigOption: boolean
+  }): AcpModelEffortMenu | undefined
   /** Native thinking choices remain valid across models; the agent clamps unsupported levels. */
   clampsUnlistedEffort?: true
   /** Opt-in because advertising forms changes agent behaviour; requests use the generic handlers. */

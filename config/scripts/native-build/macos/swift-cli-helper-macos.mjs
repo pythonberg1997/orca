@@ -27,7 +27,8 @@ export function buildSwiftCliHelper({ nativeDir, executable, argv }) {
           '-O',
           sourcePath,
           '-target',
-          triple.replace('-apple-macosx', '-apple-macosx11.0'),
+          // Match mac.minimumSystemVersion; Swift 6.4 CLT dropped x86_64 pre-macOS-13 compatibility archives.
+          triple.replace('-apple-macosx', '-apple-macosx13.4'),
           '-o',
           output
         ],

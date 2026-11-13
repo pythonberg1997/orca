@@ -25,6 +25,7 @@ import {
 } from './pane-scoped-cache-entries'
 import type { JcodeUserPromptEvidence } from '../jcode-session-files'
 import type { JcodeHelperPermissionWait } from './providers/jcode-helper-permission-wait'
+import type { AntigravityPaneChildWork } from './providers/antigravity-subagent-work'
 import type { HookRootAttempt } from './presence/hook-process-root-evidence'
 import {
   moveOpenCodeSessionBindings,
@@ -45,7 +46,7 @@ export type HookListenerState = {
   antigravityCompletedTranscriptByPaneKey: Map<string, string>
   /** Work outliving the turn, kept until agy's fully idle Stop: the conversation that spawned in-process subagents,
    *  and run_command steps agy backgrounded (PreToolUse seen, the PostToolUse it sends when the command ends not yet). */
-  antigravityChildWorkByPaneKey: Map<string, { subagentParent?: string; commands?: Set<string> }>
+  antigravityChildWorkByPaneKey: Map<string, AntigravityPaneChildWork>
   /** Journal-backed prompt for each jcode pane's current turn; see readJcodeTurnPrompt. */
   jcodeTurnPromptByPaneKey: Map<string, JcodeUserPromptEvidence | null>
   /** Open swarm-helper permission requests per jcode pane; see routeJcodeHelperHook. */

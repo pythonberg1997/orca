@@ -242,6 +242,7 @@ export abstract class AgentHookServerAuthorityAliases extends AgentHookServerAut
     }
     this.programStatusFacets.move(previousOwnerPaneKey, toPaneKey)
     this.hookSilenceRechecks.move(previousOwnerPaneKey, toPaneKey)
+    this.screenStatusSilenceRechecks.move(previousOwnerPaneKey, toPaneKey)
     this.programStatusFacetRepublishes.move(previousOwnerPaneKey, toPaneKey)
     const evidenceObservedAt = this.evidenceObservedAtByPaneKey.get(previousOwnerPaneKey)
     if (evidenceObservedAt !== undefined) {

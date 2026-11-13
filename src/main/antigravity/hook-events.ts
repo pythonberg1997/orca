@@ -26,8 +26,22 @@ export const ANTIGRAVITY_EVENTS = [
 
 // PreToolUse treats silence as denial; "ask" preserves the user’s permission policy.
 export const ANTIGRAVITY_PRE_TOOL_USE_DECISION = '{"decision":"ask"}'
+export const ANTIGRAVITY_STOP_DECISION = '{"decision":""}'
 
 export type AntigravityEvent = (typeof ANTIGRAVITY_EVENTS)[number]
+
+export function getAntigravityEventStdout(eventName: AntigravityEvent['eventName']): string {
+  switch (eventName) {
+    case 'Stop':
+      return ANTIGRAVITY_STOP_DECISION
+    case 'PreToolUse':
+      return ANTIGRAVITY_PRE_TOOL_USE_DECISION
+    case 'PreInvocation':
+    case 'PostInvocation':
+    case 'PostToolUse':
+      return '{}'
+  }
+}
 
 export const ANTIGRAVITY_MANAGED_SCRIPT_FILE_NAMES = [
   'antigravity-hook.sh',

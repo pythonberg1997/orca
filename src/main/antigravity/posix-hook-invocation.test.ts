@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import type * as OsModule from 'node:os'
 import { join } from 'node:path'
@@ -176,17 +184,105 @@ describe.skipIf(process.platform === 'win32')('Antigravity POSIX hook executable
     expect(body.hookEventName).toBe('PreInvocation')
   })
 
-  it('returns after a bounded wait when stdin has no bytes and remains open', async () => {
+  it('returns after a bounded wait inside an Orca pane when stdin has no bytes and remains open', async () => {
     home = mkdtempSync(join(tmpdir(), 'orca-agy-empty-hook-'))
-    const result = await invoke(installedCommand(home, 'PreInvocation'), '', {
+    const probeDir = join(home, 'py-probe')
+    const marker = join(home, 'python-ran')
+    mkdirSync(probeDir)
+    writeFileSync(
+      join(probeDir, 'sitecustomize.py'),
+      `open(${JSON.stringify(marker)}, "w").close()\n`
+    )
+    const posts: URLSearchParams[] = []
+    const server = createServer((req, res) => {
+      let body = ''
+      req.setEncoding('utf8')
+      req.on('data', (chunk: string) => {
+        body += chunk
+      })
+      req.on('end', () => {
+        posts.push(new URLSearchParams(body))
+        res.end('{}')
+      })
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const address = server.address()
+    if (typeof address !== 'object' || address === null) {
+      throw new Error('Missing listener port')
+    }
+    try {
+      const result = await invoke(installedCommand(home, 'PreInvocation'), '', {
+        ...process.env,
+        PYTHONPATH: probeDir,
+        ORCA_AGENT_HOOK_ENDPOINT: '',
+        ORCA_AGENT_HOOK_PORT: String(address.port),
+        ORCA_AGENT_HOOK_TOKEN: 'test-only-token',
+        ORCA_PANE_KEY: 'test-pane'
+      })
+      expect(result.code).toBe(0)
+      expect(result.stdout).toBe('{}')
+      expect(result.elapsedMs).toBeLessThan(8000)
+      expect(existsSync(marker)).toBe(true)
+      expect(posts).toHaveLength(1)
+      expect(posts[0]?.get('payload')).toBe('{}')
+    } finally {
+      server.close()
+    }
+  }, 10000)
+
+  it('answers outside an Orca pane without spawning Python or blocking on open stdin', async () => {
+    home = mkdtempSync(join(tmpdir(), 'orca-agy-outside-hook-'))
+    const probeDir = join(home, 'py-probe')
+    const marker = join(home, 'python-ran')
+    mkdirSync(probeDir)
+    writeFileSync(
+      join(probeDir, 'sitecustomize.py'),
+      `open(${JSON.stringify(marker)}, "w").close()\n`
+    )
+    const baseEnv: NodeJS.ProcessEnv = {
       ...process.env,
+      PYTHONPATH: probeDir,
       ORCA_AGENT_HOOK_ENDPOINT: '',
       ORCA_AGENT_HOOK_PORT: '',
       ORCA_AGENT_HOOK_TOKEN: '',
       ORCA_PANE_KEY: ''
-    })
-    expect(result.code).toBe(0)
-    expect(result.stdout).toBe('{}')
-    expect(result.elapsedMs).toBeLessThan(8000)
-  }, 10000)
+    }
+    const expectedByEvent = [
+      ['PreInvocation', '{}'],
+      ['PostInvocation', '{}'],
+      ['Stop', '{"decision":""}'],
+      ['PreToolUse', '{"decision":"ask"}'],
+      ['PostToolUse', '{}']
+    ] as const
+    const scriptCommand = `/bin/sh ${quotePosixShell(join(home, '.orca', 'agent-hooks', 'antigravity-hook.sh'))}`
+
+    for (const [event, expectedStdout] of expectedByEvent) {
+      const command = installedCommand(home, event)
+      for (const input of ['', '{"tool_name":"run_command"}']) {
+        const viaConfig = await invoke(command, input, baseEnv)
+        expect(viaConfig.code).toBe(0)
+        expect(viaConfig.stdout).toBe(expectedStdout)
+      }
+      const viaScript = await invoke(scriptCommand, '', {
+        ...baseEnv,
+        ORCA_ANTIGRAVITY_EVENT: event
+      })
+      expect(viaScript.code).toBe(0)
+      expect(viaScript.stdout).toBe(expectedStdout)
+    }
+
+    const preToolCommand = installedCommand(home, 'PreToolUse')
+    const preInvocationCommand = installedCommand(home, 'PreInvocation')
+    rmSync(join(home, '.orca', 'agent-hooks', 'antigravity-hook.sh'))
+
+    const missingPreTool = await invoke(preToolCommand, '', baseEnv)
+    expect(missingPreTool.code).toBe(0)
+    expect(missingPreTool.stdout).toBe('{"decision":"ask"}')
+
+    const missingPreInvocation = await invoke(preInvocationCommand, '', baseEnv)
+    expect(missingPreInvocation.code).toBe(0)
+    expect(missingPreInvocation.stdout).toBe('')
+
+    expect(existsSync(marker)).toBe(false)
+  })
 })

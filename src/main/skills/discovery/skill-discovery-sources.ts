@@ -129,6 +129,22 @@ export function buildSkillDiscoverySources(
     ...providerHomeSources(home, pathApi, providerRootOverrides),
     // Why: discovery-only agent folders; installs for these agents go to the canonical root.
     source(
+      'home-antigravity-cli',
+      'Antigravity CLI home',
+      pathApi.join(home, '.gemini', 'antigravity-cli', 'skills'),
+      'home',
+      ['agent-skills'],
+      'antigravity'
+    ),
+    source(
+      'antigravity-plugins',
+      'Antigravity plugins',
+      pathApi.join(home, '.gemini', 'config', 'plugins'),
+      'plugin',
+      ['agent-skills'],
+      'antigravity'
+    ),
+    source(
       'home-opencode',
       'OpenCode home',
       pathApi.join(home, '.config', 'opencode', 'skills'),
@@ -205,7 +221,15 @@ export function buildSkillDiscoverySources(
         null
       ),
       ...providerRepoSources(repoPath, label, pathApi),
-      // OpenCode and Qoder also read their own project folders; they install into the canonical root above.
+      // Antigravity, OpenCode and Qoder also read their own project folders; installs target the canonical root above.
+      source(
+        `repo-antigravity-agent-${stablePathId(repoPath)}`,
+        `${label} .agent`,
+        pathApi.join(repoPath, '.agent', 'skills'),
+        'repo',
+        ['agent-skills'],
+        'antigravity'
+      ),
       source(
         `repo-qoder-${stablePathId(repoPath)}`,
         `${label} .qoder`,

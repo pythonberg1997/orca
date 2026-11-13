@@ -5,6 +5,8 @@ import { readAcpPermissionRequest } from '../protocol/acp-permission-requests'
 import { acpPermissionPresentation } from '../requests/acp-timeline-requests'
 import type { ToolCallUpdate } from '../generated/acp-protocol.generated'
 import { pendingAcpResolution, type AcpDialect, type AcpRequestPresentation } from './acp-dialect'
+import { antigravityNotification, antigravityToolSubagents } from './antigravity-subagents'
+import { antigravityModelEfforts } from '../../antigravity/antigravity-model-catalog'
 
 // interaction_ permissions are questions, even in yolo mode; never auto-approve them.
 function questionRequest(method: string, params: unknown): AcpRequestPresentation | undefined {
@@ -128,6 +130,9 @@ function promptErrorDetail(error: AcpAgentError): string | undefined {
 export const ANTIGRAVITY_ACP_DIALECT: AcpDialect = {
   request: (method, params) => questionRequest(method, params) ?? warnedApproval(method, params),
   normalizeToolUpdate,
+  modelEfforts: antigravityModelEfforts,
+  toolSubagents: antigravityToolSubagents,
+  notification: antigravityNotification,
   promptErrorDetail,
   // Avoid using the full command line as the tool name.
   toolName: (update) => (update.kind === 'execute' ? 'execute' : undefined),

@@ -4,6 +4,7 @@ import { z } from 'zod'
 import type { AgentJournalToolCallItem } from '../../../shared/agent-session/journal/agent-session-journal-types'
 import type { NativeChatSubagentState } from '../../../shared/native-chat/native-chat-types'
 import type { ToolCallUpdate } from '../generated/acp-protocol.generated'
+import { acpSubagentPromptLabel } from '../timeline/acp-subagents'
 import type { AcpSubagentUpdate } from './acp-dialect'
 import { grokTaskResults, isGrokSubagentTask } from './grok-background-tasks'
 
@@ -44,7 +45,6 @@ const killInputSchema = z.object({
 })
 const SPAWN_ACK_ID = /^subagent_id:\s*(\S+)\s*$/m
 const MACHINE_BLOCKS = /<subagent_(meta|result)>[\s\S]*?<\/subagent_\1>/g
-const MAX_PROMPT_LABEL_CHARS = 80
 
 // Map lookups avoid treating __proto__ as a recognized state.
 const SUBAGENT_STATES: ReadonlyMap<string, NativeChatSubagentState> = new Map([
@@ -65,13 +65,6 @@ function subagentState(status: string | undefined): NativeChatSubagentState | un
 
 function replyText(output: string | null | undefined): string | undefined {
   return output?.replace(MACHINE_BLOCKS, '').trim() || undefined
-}
-
-function promptLabel(prompt: string | undefined): string | undefined {
-  const line = prompt?.trim().split('\n')[0]?.trim()
-  return line && line.length > MAX_PROMPT_LABEL_CHARS
-    ? `${line.slice(0, MAX_PROMPT_LABEL_CHARS - 1)}…`
-    : line || undefined
 }
 
 export function grokSubagentNotification(update: unknown): AcpSubagentUpdate | undefined {
@@ -109,7 +102,7 @@ export function grokSubagentNotification(update: unknown): AcpSubagentUpdate | u
 
 function spawnUpdates(update: ToolCallUpdate, tool: AgentJournalToolCallItem): AcpSubagentUpdate[] {
   const input = spawnInputSchema.safeParse(tool.input).data
-  const label = input?.description?.trim() || promptLabel(input?.prompt)
+  const label = input?.description?.trim() || acpSubagentPromptLabel(input?.prompt)
   const named = label ? { label } : {}
   const completed = completedSpawnSchema.safeParse(update.rawOutput)
   if (completed.success) {

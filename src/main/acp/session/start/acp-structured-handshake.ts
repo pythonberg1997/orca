@@ -161,6 +161,13 @@ export async function initializeAcpStructuredSession(
   }
   const childStops = await probeAcpChildStops(connection, spec.dialect, initialized)
   assertStarting()
+  spec.observeSession?.({
+    env: launch.env,
+    providerSessionId: started.sessionId,
+    resumed: started.kind !== 'new',
+    lane: liveLane,
+    now
+  })
   liveLane.apply(liveLane.translator.contextModels(started.response.models, now()))
   const mode = spec.permissionModeConfig
   if (mode && acquire.permissionMode !== 'own') {

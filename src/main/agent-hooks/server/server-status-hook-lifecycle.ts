@@ -31,6 +31,19 @@ export abstract class AgentHookServerStatusHookLifecycle extends AgentHookServer
     await respondAfterAgentToolPluginHooks(res, source, body, req.headers, accepted)
   }
 
+  protected clearAllAssistantMessageRetries(): void {
+    for (const timer of this.assistantMessageRetryTimers.values()) {
+      clearTimeout(timer)
+    }
+    this.assistantMessageRetryTimers.clear()
+  }
+
+  protected clearPaneTimers(): void {
+    this.hookSilenceRechecks.clear()
+    this.screenStatusSilenceRechecks.clear()
+    this.programStatusFacetRepublishes.clear()
+  }
+
   setStatusHooksEnabled(enabled: boolean): void {
     if (enabled === this.statusHooksEnabled) {
       return
@@ -40,10 +53,7 @@ export abstract class AgentHookServerStatusHookLifecycle extends AgentHookServer
       this.claudeAgentViews.clear()
       this.flushStatusPersistSync()
       this.stopOpenCodeBinderLoop()
-      for (const timer of this.assistantMessageRetryTimers.values()) {
-        clearTimeout(timer)
-      }
-      this.assistantMessageRetryTimers.clear()
+      this.clearAllAssistantMessageRetries()
       this.clearAllTranscriptPolls()
     }
     this.statusHooksEnabled = enabled

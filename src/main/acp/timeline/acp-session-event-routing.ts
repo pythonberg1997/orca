@@ -25,6 +25,18 @@ export function routeAcpSessionEvent(
     return
   }
   const { translator } = session.lane
+  let routedEvent = event
+  if (
+    !reattaching &&
+    event.kind === 'known' &&
+    event.notification.sessionId === translator.providerSessionId
+  ) {
+    const filtered = session.lane.filterSessionNotification(event.notification)
+    if (!filtered) {
+      return
+    }
+    routedEvent = { kind: 'known', notification: filtered }
+  }
   session.lane.apply(
     reattaching
       ? translator.notification(
@@ -32,6 +44,6 @@ export function routeAcpSessionEvent(
           asReattachHistory(event.kind === 'known' ? event.notification : event.raw),
           at
         )
-      : translator.sessionEvent(event, at)
+      : translator.sessionEvent(routedEvent, at)
   )
 }

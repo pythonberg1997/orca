@@ -34,6 +34,13 @@ const OPENCODE_PROFILE: NativeChatAgentProfile = {
 }
 
 const NATIVE_CHAT_AGENT_PROFILES: Partial<Record<AgentType, NativeChatAgentProfile>> = {
+  antigravity: {
+    skillPrefix: '/',
+    skillSourceOwner: 'antigravity',
+    keepsScannedSkills: true,
+    expandsSlashCommandsFromText: true,
+    textDrivenCommands: ['goal', 'schedule', 'browser', 'grill-me', 'teamwork', 'learn', 'boost']
+  },
   codex: {
     skillPrefix: '$',
     skillSourceOwner: 'codex',

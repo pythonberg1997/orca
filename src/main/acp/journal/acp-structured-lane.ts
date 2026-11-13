@@ -1,6 +1,5 @@
 // Preserve event order across journal backpressure; hold later events until the sink accepts.
 
-import { parseAgentJournalItemKey } from '../../../shared/agent-session/journal/agent-session-journal-item-key'
 import {
   createProviderTimelineAssembler,
   type ProviderTimelineAssembler
@@ -22,9 +21,17 @@ import {
   type StructuredAgentSessionLogger
 } from '../../native-chat/agent-session-wire/host/structured-agent-session-logger'
 import { createAcpOwnershipReader } from './acp-ownership-reader'
+import { matchesAcpRequestRow } from './acp-request-row-identity'
+import type { SessionNotification } from '../generated/acp-protocol.generated'
 import type { AcpTextDrop } from '../timeline/acp-turn-messages'
 
 const BACKPRESSURE_RETRY_MS = 250
+
+export type AcpLaneObserver = {
+  filterSessionNotification?: (notification: SessionNotification) => SessionNotification | null
+  onApplied: (events: readonly ProviderTimelineEvent[]) => void
+  onDisposed: () => void
+}
 
 // Publish child-work evidence only after preceding journal events commit.
 type OwnershipPublication = { type: 'ownership.publish'; publish: () => void }
@@ -54,6 +61,7 @@ export class AcpStructuredLane {
   private readonly assembler: ProviderTimelineAssembler
   private readonly backlog: (ProviderTimelineEvent | SubagentWork | OwnershipPublication)[] = []
   private readonly turnWatchers = new Set<() => void>()
+  private observer: AcpLaneObserver | null = null
   private readonly requestIdentity: ReturnType<typeof createLegacyProviderTimelineIdentityScheme>
   private retryTimer: ReturnType<typeof setTimeout> | null = null
   private failed = false
@@ -131,7 +139,17 @@ export class AcpStructuredLane {
       this.backlog.push({ type: 'ownership.publish', publish })
     }
     this.drain()
+    this.observer?.onApplied(events)
   }
+
+  observe(observer: AcpLaneObserver): void {
+    this.observer = observer
+  }
+
+  filterSessionNotification = (notification: SessionNotification): SessionNotification | null =>
+    this.observer?.filterSessionNotification
+      ? this.observer.filterSessionNotification(notification)
+      : notification
 
   /** Resolves when the turn leaves or further writes become impossible. */
   whenTurnLeaves(turnId: string, signal?: AbortSignal): Promise<void> {
@@ -155,17 +173,7 @@ export class AcpStructuredLane {
 
   /** Matches this acquisition's request row, including reused-key incarnations. */
   isRequestRow(itemId: string, requestKey: string): boolean {
-    const identity = parseAgentJournalItemKey(itemId)
-    if (identity?.provider !== 'legacy' || identity.sessionId !== this.deps.sessionId) {
-      return false
-    }
-    const first = this.requestIdentity.request({
-      generation: this.deps.generation,
-      key: requestKey,
-      incarnation: 1
-    })
-    const prefix = first.provider === 'legacy' ? first.recordId : null
-    return identity.recordId === prefix || identity.recordId.startsWith(`${prefix}#`)
+    return matchesAcpRequestRow(this.requestIdentity, this.deps, itemId, requestKey)
   }
 
   flush(): void {
@@ -177,6 +185,8 @@ export class AcpStructuredLane {
       return
     }
     this.disposed = true
+    this.observer?.onDisposed()
+    this.observer = null
     this.translator.dispose()
     this.clearRetry()
     this.backlog.length = 0
@@ -201,7 +211,7 @@ export class AcpStructuredLane {
         continue
       }
       if (event.type === 'subagent.work') {
-        if (!this.queueSubagentWork(event.evidence)) {
+        if (!this.ended && !this.queuePublication(() => this.publishSubagentWork(event.evidence))) {
           return
         }
         this.backlog.shift()
@@ -254,17 +264,12 @@ export class AcpStructuredLane {
       return
     }
     this.failed = true
+    this.observer?.onDisposed()
+    this.observer = null
     this.translator.dispose()
     this.backlog.length = 0
     this.notifyTurnWatchers()
     this.deps.onFailed(reason)
-  }
-
-  private queueSubagentWork(evidence: AgentChildWorkEvidence[]): boolean {
-    if (this.ended) {
-      return true
-    }
-    return this.queuePublication(() => this.publishSubagentWork(evidence))
   }
 
   private queuePublication(onPublished: () => void): boolean {
@@ -303,9 +308,8 @@ export class AcpStructuredLane {
     }
   }
 
-  private publishSessionEnd(): void {
+  private publishSessionEnd = (): void =>
     this.publishEvidence([{ type: 'session-ended', observedAt: this.deps.now?.() ?? Date.now() }])
-  }
 
   private notifyTurnWatchers(): void {
     for (const check of this.turnWatchers) {

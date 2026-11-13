@@ -120,7 +120,22 @@ const OMP_COMMANDS: readonly SlashCommandSuggestion[] = [
   { name: 'hotkeys', description: 'Show keyboard shortcuts in Terminal' }
 ]
 
+const ANTIGRAVITY_COMMANDS: readonly SlashCommandSuggestion[] = [
+  { name: 'clear', description: 'Clear conversation history' },
+  { name: 'compact', description: 'Compact the conversation now' },
+  { name: 'plan', description: 'Plan carefully before executing a task' },
+  { name: 'goal', description: 'Run until the specified goal is completely finished' },
+  { name: 'schedule', description: 'Run an instruction on a recurring schedule or timer' },
+  { name: 'browser', description: 'Invoke a browser agent for web tasks' },
+  { name: 'grill-me', description: 'Interview to align on a plan' },
+  { name: 'teamwork', description: 'Invoke a team of agents to tackle large projects' },
+  { name: 'learn', description: 'Capture reusable skills or rules from this session' },
+  { name: 'boost', description: 'Invoke the Boost multi-agent orchestrator' },
+  { name: 'help', description: 'Show available commands' }
+]
+
 const COMMANDS_BY_AGENT: Partial<Record<AgentType, readonly SlashCommandSuggestion[]>> = {
+  antigravity: ANTIGRAVITY_COMMANDS,
   claude: CLAUDE_COMMANDS,
   openclaude: OPENCLAUDE_COMMANDS,
   codex: CODEX_COMMANDS,

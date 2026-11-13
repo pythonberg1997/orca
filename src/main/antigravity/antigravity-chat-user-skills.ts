@@ -5,6 +5,7 @@ import { dirname, join, resolve } from 'node:path'
 // The server reads user-wide skills from these folders under GEMINI_HOME.
 const SKILL_FOLDERS = [
   ['config', 'skills'],
+  ['config', 'plugins'],
   ['antigravity-cli', 'skills']
 ] as const
 

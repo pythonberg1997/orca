@@ -1,12 +1,19 @@
+import { mkdir, mkdtemp, rm, stat } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { AntigravityChatAuthConfig } from '../../../shared/antigravity-chat-auth-config'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, onTestFinished } from 'vitest'
 import fixture from '../fixtures/antigravity-v1.4.1-options.json'
 import { z } from 'zod'
 import { readAgentJournalTurn } from '../../../shared/agent-session/lifecycle/agent-session-turn-record'
+import { antigravityHostAccountHome } from '../../antigravity/antigravity-host-acp'
+import { linkAntigravityUserSkills } from '../../antigravity/antigravity-chat-user-skills'
+import { AgentModelCatalogListingStoppedError } from '../../native-chat/agent-model-catalog/agent-model-catalog-failures'
 import {
   closeProviderTimelineRigs,
   SESSION
 } from '../../native-chat/agent-session-timeline/provider-timeline-assembler-test-support'
+import { createAcpModelCatalogProbe } from '../discovery/acp-model-catalog-probe'
 import { acpLaunchSpecFor } from '../launch/acp-launch-registry'
 import {
   type AcpAdapterRig,
@@ -247,10 +254,16 @@ it.each<{ config: AntigravityChatAuthConfig | undefined; method: string }>([
 )
 
 it("leaves a Full access host chat's plan approval to the person", async () => {
+  const userHome = await mkdtemp(join(tmpdir(), 'orca-agy-plan-'))
+  onTestFinished(() => rm(userHome, { recursive: true, force: true }))
   let answered = false
   const rig = await openAcpAdapterRig({
     spec: ANTIGRAVITY.hostBackend!.spec,
-    launch: { args: ['acp', '--dangerously-skip-permissions'], fullAccess: true },
+    launch: {
+      args: ['acp', '--dangerously-skip-permissions'],
+      fullAccess: true,
+      env: { PATH: '/usr/bin', HOME: userHome, USERPROFILE: userHome }
+    },
     script: (agent) =>
       agent.on('session/prompt', () => {
         // agy's flag does not approve plans, so it still asks.
@@ -294,4 +307,207 @@ it('stops a chat that has left the gate but is not loaded yet before the operati
     }
   )
   expect(ranOverLiveChild).toBe(false)
+})
+
+it('derives per-model thinking efforts from availableModels and CLI model listings', async () => {
+  const hostDiscovery = ANTIGRAVITY.hostBackend!.spec.modelDiscovery
+  expect(hostDiscovery.kind).toBe('command')
+  if (hostDiscovery.kind !== 'command') {
+    throw new Error('expected command model discovery')
+  }
+  const parsedCli = hostDiscovery.parse(
+    [
+      'gemini-4-hydrogen-high\tGemini 4 Hydrogen (High)',
+      'gemini-4-hydrogen-xhigh\tGemini 4 Hydrogen (XHigh)',
+      'gemini-4-hydrogen-medium\tGemini 4 Hydrogen (Medium)',
+      'gemini-4-hydrogen-low\tGemini 4 Hydrogen (Low)',
+      'gemini-pro-orchestrator\tOrchestrator (Carbon)',
+      'gemini-3.1-pro-high\tGemini 3.1 Pro (High)',
+      'gemini-3.1-pro-low\tGemini 3.1 Pro (Low)',
+      'gpt-oss-120b-medium\tGPT-OSS 120B (Medium)'
+    ].join('\n')
+  )
+  expect(parsedCli).toEqual([
+    {
+      id: 'gemini-4-hydrogen',
+      label: 'Gemini 4 Hydrogen',
+      isDefault: false,
+      defaultEffort: 'high',
+      declaredDefaultEffort: 'high',
+      efforts: [
+        { value: 'low', label: 'Low' },
+        { value: 'medium', label: 'Medium' },
+        { value: 'high', label: 'High' },
+        { value: 'xhigh', label: 'Extra' }
+      ]
+    },
+    {
+      id: 'gemini-pro-orchestrator',
+      label: 'Orchestrator (Carbon)',
+      isDefault: false,
+      declaredDefaultEffort: null,
+      efforts: []
+    },
+    {
+      id: 'gemini-3.1-pro',
+      label: 'Gemini 3.1 Pro',
+      isDefault: false,
+      defaultEffort: 'high',
+      declaredDefaultEffort: 'high',
+      efforts: [
+        { value: 'low', label: 'Low' },
+        { value: 'high', label: 'High' }
+      ]
+    },
+    {
+      id: 'gpt-oss-120b-medium',
+      label: 'GPT-OSS 120B (Medium)',
+      isDefault: false,
+      declaredDefaultEffort: null,
+      efforts: []
+    }
+  ])
+
+  const sessionConfigOptions = [
+    {
+      id: 'model',
+      name: 'Model',
+      category: 'model',
+      type: 'select',
+      currentValue: 'gemini-4-carbon',
+      options: [
+        { value: 'gemini-4-carbon', name: 'Gemini 4 Carbon' },
+        { value: 'gemini-4-hydrogen', name: 'Gemini 4 Hydrogen' },
+        { value: 'gemini-pro-orchestrator', name: 'Orchestrator (Carbon)' },
+        { value: 'gpt-oss-120b-medium', name: 'GPT-OSS 120B (Medium)' }
+      ]
+    },
+    {
+      id: 'thought_level',
+      name: 'Thinking Level',
+      category: 'thought_level',
+      type: 'select',
+      currentValue: 'medium',
+      options: [
+        { value: 'low', label: 'Low', name: 'Low' },
+        { value: 'medium', label: 'Medium', name: 'Medium' },
+        { value: 'high', label: 'High', name: 'High' }
+      ]
+    },
+    fixture.session.configOptions[2]!
+  ]
+  const userHome = await mkdtemp(join(tmpdir(), 'orca-agy-options-'))
+  onTestFinished(() => rm(userHome, { recursive: true, force: true }))
+  const rig = await openAcpAdapterRig({
+    spec: ANTIGRAVITY.hostBackend!.spec,
+    launch: { env: { PATH: '/usr/bin', HOME: userHome, USERPROFILE: userHome } },
+    initialize: fixture.initialize,
+    script: (agent) => {
+      agent.on('session/new', (frame) =>
+        agent.reply(frame, {
+          sessionId: PROVIDER_SESSION,
+          configOptions: sessionConfigOptions,
+          models: {
+            currentModelId: 'gemini-4-carbon-medium',
+            availableModels: [
+              { modelId: 'gemini-4-carbon-medium', name: 'Gemini 4 Carbon (Medium)' },
+              { modelId: 'gemini-4-carbon-high', name: 'Gemini 4 Carbon (High)' },
+              { modelId: 'gemini-4-carbon-low', name: 'Gemini 4 Carbon (Low)' },
+              { modelId: 'gemini-4-hydrogen-high', name: 'Gemini 4 Hydrogen (High)' },
+              { modelId: 'gemini-4-hydrogen-xhigh', name: 'Gemini 4 Hydrogen (XHigh)' },
+              { modelId: 'gemini-4-hydrogen-medium', name: 'Gemini 4 Hydrogen (Medium)' },
+              { modelId: 'gemini-4-hydrogen-low', name: 'Gemini 4 Hydrogen (Low)' },
+              { modelId: 'gemini-pro-orchestrator', name: 'Orchestrator (Carbon)' },
+              { modelId: 'gpt-oss-120b-medium', name: 'GPT-OSS 120B (Medium)' }
+            ]
+          }
+        })
+      )
+      agent.on('session/set_config_option', (frame) =>
+        agent.reply(frame, { configOptions: sessionConfigOptions })
+      )
+    }
+  })
+  await rig.acquire()
+  expect(rig.started().catalogListing?.models).toEqual([
+    expect.objectContaining({
+      id: 'gemini-4-carbon',
+      defaultEffort: 'medium',
+      efforts: [
+        { value: 'low', label: 'Low' },
+        { value: 'medium', label: 'Medium' },
+        { value: 'high', label: 'High' }
+      ]
+    }),
+    expect.objectContaining({
+      id: 'gemini-4-hydrogen',
+      defaultEffort: 'high',
+      efforts: [
+        { value: 'low', label: 'Low' },
+        { value: 'medium', label: 'Medium' },
+        { value: 'high', label: 'High' },
+        { value: 'xhigh', label: 'Extra' }
+      ]
+    }),
+    expect.objectContaining({
+      id: 'gemini-pro-orchestrator',
+      declaredDefaultEffort: null,
+      efforts: []
+    }),
+    expect.objectContaining({
+      id: 'gpt-oss-120b-medium',
+      declaredDefaultEffort: null,
+      efforts: []
+    })
+  ])
+})
+
+it('probes host agy models while stopping managed probes cleanly and linking plugin skills into chat homes', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'orca-agy-probe-'))
+  onTestFinished(() => rm(root, { recursive: true, force: true }))
+  const userHome = join(root, 'home')
+  const managedHome = join(root, 'antigravity-chat')
+  await mkdir(join(userHome, '.gemini', 'config', 'plugins', 'context7', 'skills', 'c7'), {
+    recursive: true
+  })
+  await linkAntigravityUserSkills(managedHome, userHome)
+  expect(
+    (await stat(join(managedHome, 'config', 'plugins', 'context7', 'skills', 'c7'))).isDirectory()
+  ).toBe(true)
+
+  const seenArgs: string[][] = []
+  const probe = createAcpModelCatalogProbe(ANTIGRAVITY, {
+    homePath: userHome,
+    dataDirectory: root,
+    resolveEnvironment: async () => ({ PATH: '/usr/bin', HOME: userHome, USERPROFILE: userHome }),
+    resolveCommand: (command) => `/mock/${command}`,
+    probeVersion: async () => ({ status: 'ok', version: '1.5.2' }),
+    runListing: async (launch) => {
+      seenArgs.push(launch.args)
+      return 'gemini-3.1-pro-high\tGemini 3.1 Pro (High)\ngemini-3.1-pro-low\tGemini 3.1 Pro (Low)\n'
+    }
+  })
+  await expect(probe({ variable: 'GEMINI_HOME', path: managedHome })).rejects.toBeInstanceOf(
+    AgentModelCatalogListingStoppedError
+  )
+  expect(seenArgs).toEqual([])
+
+  const listed = await probe(antigravityHostAccountHome(userHome))
+  expect(seenArgs).toEqual([['models']])
+  expect(listed).toEqual({
+    origin: 'probe',
+    models: [
+      {
+        id: 'gemini-3.1-pro',
+        label: 'Gemini 3.1 Pro',
+        isDefault: false,
+        defaultEffort: 'high',
+        declaredDefaultEffort: 'high',
+        efforts: [
+          { value: 'low', label: 'Low' },
+          { value: 'high', label: 'High' }
+        ]
+      }
+    ]
+  })
 })

@@ -13,7 +13,10 @@ import type { AgentHookEventPayload } from '../../../shared/agent-hook-listener/
 import { agentSubagentsEqual } from '../../../shared/agent-status/contracts/agent-status-subagent-snapshot'
 import { isAgentStatusHeldOpenByChildWork } from '../../../shared/agent-status/lifecycle/agent-lead-status-fold'
 import { AgentHookServerIngestNormalization } from './server-ingest-normalization'
-import { programStatusHookYieldEndsAt } from './program-status/hook-precedence'
+import {
+  antigravityScreenStatusHookYieldEndsAt,
+  programStatusHookYieldEndsAt
+} from './program-status/hook-precedence'
 import type { ProgramStatusFacet } from '../../../shared/program-status/facet'
 
 const PROGRAM_STATUS_FACET_REPUBLISH_MS = 250
@@ -213,28 +216,28 @@ export abstract class AgentHookServerIngestTerminal extends AgentHookServerInges
     const yieldEndsAt =
       event.fromProgramStatus === true
         ? programStatusHookYieldEndsAt(previous, payload, workingSince)
-        : undefined
+        : antigravityScreenStatusHookYieldEndsAt(previous, payload)
     const hookOwnsAgent = yieldEndsAt !== undefined && now < yieldEndsAt
-    if (event.fromProgramStatus === true) {
-      if (hookOwnsAgent && previous && Number.isFinite(yieldEndsAt)) {
-        const yieldedTo = previous.receivedAt
-        const delayMs = yieldEndsAt - now
-        this.hookSilenceRechecks.defer(paneKey, delayMs + 1, (currentPaneKey) => {
-          const row = this.state.lastStatusByPaneKey.get(currentPaneKey)
-          // Re-offer only against the hook observation this report yielded to.
-          if (
-            row &&
-            row.providerSessionOnly !== true &&
-            'receivedAt' in row &&
-            row.receivedAt === yieldedTo
-          ) {
-            const tabId = parsePaneKey(currentPaneKey)?.tabId ?? event.tabId
-            this.ingestTerminalStatus({ ...event, paneKey: currentPaneKey, tabId })
-          }
-        })
-      } else {
-        this.hookSilenceRechecks.cancel(paneKey)
-      }
+    const silenceRechecks =
+      event.fromProgramStatus === true ? this.hookSilenceRechecks : this.screenStatusSilenceRechecks
+    if (hookOwnsAgent && previous && Number.isFinite(yieldEndsAt)) {
+      const yieldedTo = previous.receivedAt
+      const delayMs = yieldEndsAt - now
+      silenceRechecks.defer(paneKey, delayMs + 1, (currentPaneKey) => {
+        const row = this.state.lastStatusByPaneKey.get(currentPaneKey)
+        // Re-offer only against the hook observation this report yielded to.
+        if (
+          row &&
+          row.providerSessionOnly !== true &&
+          'receivedAt' in row &&
+          row.receivedAt === yieldedTo
+        ) {
+          const tabId = parsePaneKey(currentPaneKey)?.tabId ?? event.tabId
+          this.ingestTerminalStatus({ ...event, paneKey: currentPaneKey, tabId })
+        }
+      })
+    } else {
+      silenceRechecks.cancel(paneKey)
     }
     if (
       hookOwnsCommand ||

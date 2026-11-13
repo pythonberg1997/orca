@@ -17,6 +17,7 @@ import type { AcpLaunchGate } from './acp-launch-gate'
 import type { AgentSessionAccountHome } from '../../../shared/agent-session/lifecycle/agent-session-account-home'
 import type { AcpModelDiscovery } from '../discovery/acp-model-discovery-policy'
 import type { InitializeResponse } from '../generated/acp-protocol.generated'
+import type { AcpStructuredLane } from '../journal/acp-structured-lane'
 
 export type AcpLaunchSpec = {
   agent: TuiAgent
@@ -80,6 +81,14 @@ export type AcpLaunchSpec = {
     env: Readonly<Record<string, string>>
     signal?: AbortSignal
   }): Promise<Readonly<Record<string, unknown>> | undefined>
+  /** Attach provider-specific out-of-band session observers once the session lane opens. */
+  observeSession?(input: {
+    env: Readonly<Record<string, string>>
+    providerSessionId: string
+    resumed: boolean
+    lane: AcpStructuredLane
+    now: () => number
+  }): void
   launchGate?: AcpLaunchGate
   /** Writes sessions it cannot delete into the user's own history, so it runs no naming tasks. */
   keepsEverySession?: true

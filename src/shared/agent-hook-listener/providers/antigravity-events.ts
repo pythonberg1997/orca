@@ -9,58 +9,16 @@ import { extractToolFields, isNewTurnEvent } from '../provider-event-routing'
 import { readLastUserPromptFromTranscript } from '../transcript-lines'
 import { readAntigravityToolCall } from './antigravity-tool-fields'
 import { isAntigravityStopStillBusy } from './antigravity-event-rules'
+import {
+  activeAntigravitySubagents,
+  isAntigravityFeedbackTool,
+  isAntigravityStepEvent,
+  normalizeAntigravityChildSubagentEvent,
+  trackAntigravityBackgroundCommand,
+  trackAntigravityParentSubagentTools
+} from './antigravity-subagent-work'
 
-export function isAntigravityFeedbackTool(toolName: string | undefined): boolean {
-  return toolName === 'ask_question' || toolName === 'ask_permission'
-}
-
-function isAntigravitySubagentTool(toolName: string | undefined): boolean {
-  return toolName === 'invoke_subagent' || toolName === 'send_message'
-}
-
-/** agy sends a backgrounded run_command's PostToolUse only when the command ends; daemons are never expected to. */
-function trackAntigravityBackgroundCommand(
-  state: HookListenerState,
-  paneKey: string,
-  eventName: unknown,
-  conversationId: string | undefined,
-  hookPayload: Record<string, unknown>
-): void {
-  const { toolName, toolInputSource } = readAntigravityToolCall(hookPayload)
-  const stepIdx = hookPayload.stepIdx
-  if (
-    toolName !== 'run_command' ||
-    !conversationId ||
-    typeof stepIdx !== 'number' ||
-    (eventName !== 'PreToolUse' && eventName !== 'PostToolUse')
-  ) {
-    return
-  }
-  const key = `${conversationId}:${stepIdx}`
-  if (eventName === 'PostToolUse') {
-    state.antigravityChildWorkByPaneKey.get(paneKey)?.commands?.delete(key)
-    return
-  }
-  const args =
-    typeof toolInputSource === 'object' && toolInputSource !== null ? toolInputSource : {}
-  if ('IsDaemon' in args && args.IsDaemon === true) {
-    return
-  }
-  const work = antigravityChildWork(state, paneKey)
-  work.commands = (work.commands ?? new Set()).add(key)
-}
-
-function antigravityChildWork(
-  state: HookListenerState,
-  paneKey: string
-): { subagentParent?: string; commands?: Set<string> } {
-  let work = state.antigravityChildWorkByPaneKey.get(paneKey)
-  if (!work) {
-    work = {}
-    state.antigravityChildWorkByPaneKey.set(paneKey, work)
-  }
-  return work
-}
+export { isAntigravityFeedbackTool } from './antigravity-subagent-work'
 
 export function normalizeAntigravityEvent(
   state: HookListenerState,
@@ -69,15 +27,30 @@ export function normalizeAntigravityEvent(
   paneKey: string,
   hookPayload: Record<string, unknown>
 ): ParsedAgentStatusPayload | null {
+  const now = Date.now()
   const transcriptPath = readFirstString(hookPayload, ['transcriptPath', 'transcript_path'])
   const conversationId = readFirstString(hookPayload, ['conversationId', 'conversation_id'])
-  const subagentParent = state.antigravityChildWorkByPaneKey.get(paneKey)?.subagentParent
+  const currentAgent = state.lastStatusByPaneKey.get(paneKey)?.payload.agentType
+  if (currentAgent && currentAgent !== 'antigravity') {
+    state.antigravityChildWorkByPaneKey.delete(paneKey)
+  }
+  const hasUserInput = Boolean(readFirstString(hookPayload, ['lastUserInput']))
+  const existingWork = state.antigravityChildWorkByPaneKey.get(paneKey)
+  const subagentParent = existingWork?.subagentParent
   if (subagentParent && conversationId && conversationId !== subagentParent) {
     // Subagents run inside the parent agy under their own conversationId and never carry user input.
-    if (!readFirstString(hookPayload, ['lastUserInput'])) {
-      return null
+    if (!hasUserInput) {
+      return normalizeAntigravityChildSubagentEvent(
+        state,
+        existingWork,
+        paneKey,
+        conversationId,
+        eventName,
+        hookPayload,
+        now
+      )
     }
-    delete antigravityChildWork(state, paneKey).subagentParent
+    state.antigravityChildWorkByPaneKey.delete(paneKey)
   }
   if (eventName === 'PreInvocation') {
     state.antigravityCompletedTranscriptByPaneKey.delete(paneKey)
@@ -90,34 +63,42 @@ export function normalizeAntigravityEvent(
     return null
   }
 
-  const toolName = readAntigravityToolCall(hookPayload).toolName
-  if (
-    conversationId &&
-    (eventName === 'PreToolUse' || eventName === 'PostToolUse') &&
-    isAntigravitySubagentTool(toolName)
-  ) {
-    antigravityChildWork(state, paneKey).subagentParent = conversationId
-  }
-  trackAntigravityBackgroundCommand(state, paneKey, eventName, conversationId, hookPayload)
+  const toolCall = readAntigravityToolCall(hookPayload)
+  const stepIdx = hookPayload.stepIdx
+  const hasToolError = typeof hookPayload.error === 'string' && hookPayload.error.trim().length > 0
+  trackAntigravityParentSubagentTools(
+    state,
+    paneKey,
+    eventName,
+    conversationId,
+    hasUserInput,
+    stepIdx,
+    toolCall,
+    hasToolError,
+    now
+  )
+  trackAntigravityBackgroundCommand(state, paneKey, eventName, conversationId, stepIdx, toolCall)
 
   const stopStillBusy = eventName === 'Stop' && isAntigravityStopStillBusy(hookPayload)
   // agy ends the parent's turn with fullyIdle=false while its helpers run; they hold the pane open.
   const childWork = state.antigravityChildWorkByPaneKey.get(paneKey)
+  if (stopStillBusy && childWork) {
+    childWork.parentStoppedAt ??= now
+  } else if (childWork && isAntigravityStepEvent(eventName)) {
+    childWork.parentStoppedAt = undefined
+  }
   const heldOpenByHelpers = stopStillBusy && childWork?.subagentParent !== undefined
   // A backgrounded command holds it the same way, as monitoring so silence can still bound it.
   const heldOpenByCommands =
     stopStillBusy && !heldOpenByHelpers && (childWork?.commands?.size ?? 0) > 0
   const stateName =
-    eventName === 'PreToolUse' && isAntigravityFeedbackTool(toolName)
+    eventName === 'PreToolUse' && isAntigravityFeedbackTool(toolCall.toolName)
       ? 'waiting'
       : eventName === 'Stop'
         ? stopStillBusy
           ? 'working'
           : 'done'
-        : eventName === 'PreInvocation' ||
-            eventName === 'PostInvocation' ||
-            eventName === 'PreToolUse' ||
-            eventName === 'PostToolUse'
+        : isAntigravityStepEvent(eventName)
           ? 'working'
           : null
 
@@ -137,6 +118,7 @@ export function normalizeAntigravityEvent(
     { resetOnNewTurn: resetsTurn }
   )
 
+  const subagents = stateName === 'done' ? undefined : activeAntigravitySubagents(childWork)
   const payload = normalizeAgentStatusPayload({
     state: stateName,
     prompt: resolvePrompt(state, paneKey, effectivePrompt, {
@@ -148,10 +130,11 @@ export function normalizeAntigravityEvent(
     interactivePrompt: snapshot.interactivePrompt,
     lastAssistantMessage: snapshot.lastAssistantMessage,
     lastAssistantMessageIsToolOutput: snapshot.lastAssistantMessageIsToolOutput,
+    ...(subagents ? { subagents } : {}),
     ...(heldOpenByCommands ? { workingMode: 'monitoring' as const } : {}),
     mainAgent:
       heldOpenByHelpers || heldOpenByCommands
-        ? { state: 'done', stateStartedAt: Date.now() }
+        ? { state: 'done', stateStartedAt: childWork?.parentStoppedAt ?? now }
         : undefined
   })
   // Stop between tools can report fullyIdle=false; only an idle Stop is terminal.

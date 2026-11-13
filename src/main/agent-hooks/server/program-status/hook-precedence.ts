@@ -86,3 +86,24 @@ export function programStatusHookYieldEndsAt(
   }
   return previous.receivedAt + HOOK_SILENCE_BEFORE_PROGRAM_STATUS_FALLBACK_MS
 }
+
+/** Non-OSC terminal screen rules (e.g. composer_ready) yield to an Antigravity hook held open by child work. */
+export function antigravityScreenStatusHookYieldEndsAt(
+  previous: EnrichedAgentHookEventPayload | undefined,
+  payload: ParsedAgentStatusPayload
+): number | undefined {
+  if (
+    payload.state !== 'done' ||
+    payload.sessionBoundary === true ||
+    previous?.observation?.origin !== 'hook' ||
+    previous.providerSessionOnly === true ||
+    previous.payload.agentType !== 'antigravity' ||
+    (payload.agentType !== undefined && payload.agentType !== 'antigravity') ||
+    !isAgentStatusHeldOpenByChildWork(previous.payload)
+  ) {
+    return undefined
+  }
+  return previous.payload.workingMode === 'monitoring'
+    ? previous.receivedAt + AGENT_STATUS_STALE_AFTER_MS
+    : Infinity
+}

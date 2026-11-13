@@ -1,5 +1,13 @@
 import { agentChoiceCliApply } from '../../agent-launch/choices/agent-choice-cli-apply'
+import type { AgentSessionOptionChoice } from '../agent-session-wire'
 import type { AgentSessionOptionCatalog, CatalogOption } from './agent-session-option-catalog-types'
+
+export const ANTIGRAVITY_BASE_EFFORT_CHOICES: readonly AgentSessionOptionChoice[] = [
+  { value: 'low', label: 'Low' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'high', label: 'High' },
+  { value: 'xhigh', label: 'Extra' }
+]
 
 const ANTIGRAVITY_EFFORT: CatalogOption = {
   id: 'effort',
@@ -7,11 +15,7 @@ const ANTIGRAVITY_EFFORT: CatalogOption = {
   category: 'thought_level',
   kind: {
     type: 'select',
-    choices: [
-      { value: 'low', label: 'Low' },
-      { value: 'medium', label: 'Medium' },
-      { value: 'high', label: 'High' }
-    ],
+    choices: [...ANTIGRAVITY_BASE_EFFORT_CHOICES],
     defaultValue: 'high'
   },
   apply: {

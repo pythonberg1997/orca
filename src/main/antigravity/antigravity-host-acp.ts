@@ -25,7 +25,8 @@ const AGY_HOME_FOLDER = '.gemini'
 /** Approves tools, not plans; the check launches with it, so a build without it stays managed. */
 export const AGY_SKIP_PERMISSIONS_FLAG = '--dangerously-skip-permissions'
 const PROBE_TIMEOUT_MS = 5_000
-const RECHECK_MS = 5 * 60_000
+const SUCCESS_RECHECK_MS = 30 * 60_000
+const FAILURE_RECHECK_MS = 10_000
 
 export function isCompatibleAntigravityHostAcp(initialized: InitializeResponse): boolean {
   const capabilities = initialized.agentCapabilities
@@ -57,10 +58,62 @@ export function isAntigravityHostAccountHome(home: AgentSessionAccountHome): boo
 }
 
 // Keyed by the binary's identity so an upgrade or reinstall is checked again.
-type HostCheck = { identity: string; answer: Promise<boolean>; retryAt?: number }
+type HostCheck = {
+  identity: string
+  answer: Promise<boolean>
+  ready?: boolean
+  retryAt?: number
+  revalidating?: Promise<boolean>
+}
 const checks = new Map<string, HostCheck>()
 
 class IncompatibleHostAcp extends Error {}
+
+function createHostAcpCheck(
+  command: string,
+  identity: string,
+  env: Record<string, string>,
+  envToDelete: string[],
+  now: () => number
+): HostCheck {
+  let answered = false
+  const check: HostCheck = {
+    identity,
+    retryAt: now() + SUCCESS_RECHECK_MS,
+    answer: initializeAntigravityAcp(
+      () => ({ command, args: ['acp', AGY_SKIP_PERMISSIONS_FLAG], env, envToDelete }),
+      PROBE_TIMEOUT_MS,
+      undefined,
+      async (connection, initialized, folder) => {
+        answered = true
+        if (!isCompatibleAntigravityHostAcp(initialized)) {
+          throw new IncompatibleHostAcp()
+        }
+        // A present keychain item does not prove agy can sign in silently; session requests
+        // answer "Authentication required" until it has. Unlike session/new, listing writes no
+        // conversation into agy's history.
+        await connection.listSessions(folder)
+      }
+    ).then(
+      () => {
+        check.ready = true
+        check.retryAt = now() + SUCCESS_RECHECK_MS
+        return true
+      },
+      (error: unknown) => {
+        check.ready = false
+        // An exit before initialize answers is a binary rejecting the launch flag, not a lapse.
+        check.retryAt =
+          error instanceof IncompatibleHostAcp ||
+          (!answered && error instanceof AcpConnectionClosedError)
+            ? undefined
+            : now() + FAILURE_RECHECK_MS
+        return false
+      }
+    )
+  }
+  return check
+}
 
 /** Whether `command acp` initializes as a compatible server that serves session requests. An
  *  incompatible binary is not asked again; a sign-in can lapse or a hung agy recover, so any other
@@ -77,41 +130,26 @@ export async function antigravityHostAcpReady(
   }
   const identity = `${stats.size}:${stats.mtimeMs}`
   const cached = checks.get(command)
-  if (cached?.identity === identity && (cached.retryAt === undefined || now() < cached.retryAt)) {
-    return cached.answer
-  }
-  let answered = false
-  const check: HostCheck = {
-    identity,
-    retryAt: now() + RECHECK_MS,
-    answer: initializeAntigravityAcp(
-      () => ({ command, args: ['acp', AGY_SKIP_PERMISSIONS_FLAG], env, envToDelete }),
-      PROBE_TIMEOUT_MS,
-      undefined,
-      async (connection, initialized, folder) => {
-        answered = true
-        if (!isCompatibleAntigravityHostAcp(initialized)) {
-          throw new IncompatibleHostAcp()
-        }
-        // A present keychain item does not prove agy can sign in silently; session requests
-        // answer "Authentication required" until it has. Unlike session/new, listing writes no
-        // conversation into agy's history.
-        await connection.listSessions(folder)
+  if (cached?.identity === identity) {
+    if (cached.retryAt === undefined || now() < cached.retryAt) {
+      return cached.answer
+    }
+    // Revalidate previously proven servers in the background so session opens do not stall.
+    if (cached.ready === true) {
+      if (!cached.revalidating) {
+        const next = createHostAcpCheck(command, identity, env, envToDelete, now)
+        cached.revalidating = next.answer.then((ready) => {
+          if (checks.get(command) === cached) {
+            checks.set(command, next)
+          }
+          cached.revalidating = undefined
+          return ready
+        })
       }
-    ).then(
-      () => true,
-      (error: unknown) => {
-        // An exit before initialize answers is a binary rejecting the launch flag, not a lapse.
-        if (
-          error instanceof IncompatibleHostAcp ||
-          (!answered && error instanceof AcpConnectionClosedError)
-        ) {
-          check.retryAt = undefined
-        }
-        return false
-      }
-    )
+      return true
+    }
   }
+  const check = createHostAcpCheck(command, identity, env, envToDelete, now)
   checks.set(command, check)
   return check.answer
 }
