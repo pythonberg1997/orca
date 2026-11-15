@@ -116,6 +116,8 @@ const ANTIGRAVITY_HOST_LAUNCH_SPEC: AcpLaunchSpec = {
     }
   },
   minimumVersions: [ANTIGRAVITY_HOST_ACP_MINIMUM_VERSION],
+  // Host agy >= 1.5.2 expands standalone /compact in ACP; managed 1.4.1 predates it.
+  compaction: true,
   installDirectories: ({ homePath }) => [join(homePath, '.local', 'bin')],
   managedRuntime: undefined,
   resolveSessionMeta: undefined,

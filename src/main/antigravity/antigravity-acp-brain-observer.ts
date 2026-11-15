@@ -45,6 +45,7 @@ export function observeAntigravityAcpBrainSession(input: {
   let activePromptSawTraffic = false
   let latestPromptChars: number | null = input.resumed ? 0 : null
   let seenUserInput = input.resumed
+  let cycleRanStep = input.resumed
   let transcriptCharsInCycle = 0
   let supersededByNewerUserInput = false
   let promptOpen = false
@@ -109,6 +110,7 @@ export function observeAntigravityAcpBrainSession(input: {
   const hasCompletedPromptBudget = (): boolean =>
     !supersededByNewerUserInput &&
     !promptOpen &&
+    !lane.openTurnId &&
     seenUserInput &&
     latestPromptChars !== null &&
     transcriptCharsInCycle >= latestPromptChars
@@ -116,6 +118,7 @@ export function observeAntigravityAcpBrainSession(input: {
   const handlePlannerStep = (
     record: Extract<AntigravityBrainRecord, { kind: 'planner-response' }>
   ): void => {
+    cycleRanStep = true
     for (const call of record.toolCalls) {
       if (call.name === 'send_message' && typeof call.args.Recipient === 'string') {
         children.retrackKnown(call.args.Recipient.trim())
@@ -168,7 +171,15 @@ export function observeAntigravityAcpBrainSession(input: {
         closeWakeupTurn('end_turn')
         unhandledSystemWake = false
         seenUserInput = true
+        cycleRanStep = false
         transcriptCharsInCycle = 0
+      } else if (record.kind === 'checkpoint') {
+        // Manual `/compact` writes CHECKPOINT before any planner step; mid-turn auto-compaction does not.
+        if (!cycleRanStep) {
+          closeWakeupTurn('end_turn')
+          unhandledSystemWake = false
+          cycleRanStep = true
+        }
       } else if (record.kind === 'generic') {
         if (record.backgroundTaskId) {
           openParentTasks.add(record.backgroundTaskId)
@@ -189,7 +200,9 @@ export function observeAntigravityAcpBrainSession(input: {
         }
       } else if (record.kind === 'system-message') {
         const subagentUpdates = children.applySystemMessages(record.messages, openParentTasks)
-        if (hasCompletedPromptBudget() && !wakeupTurn) {
+        // Inbox drains before a user turn's first step belong to that turn, not a reactive wakeup.
+        const canWake = cycleRanStep && record.messages.some((msg) => msg.wakesAgent)
+        if (canWake && hasCompletedPromptBudget() && !wakeupTurn) {
           unhandledSystemWake = false
           wakeupTurn = `agy-wakeup:${record.stepIndex ?? 's'}:${nextSeq++}`
           emitBrainTurn({
@@ -198,7 +211,7 @@ export function observeAntigravityAcpBrainSession(input: {
             ...(subagentUpdates.length > 0 ? { subagents: subagentUpdates } : {})
           })
         } else {
-          if (!wakeupTurn && !supersededByNewerUserInput && record.messages.length > 0) {
+          if (canWake && !wakeupTurn && !supersededByNewerUserInput) {
             unhandledSystemWake = true
           }
           if (subagentUpdates.length > 0) {
@@ -215,6 +228,7 @@ export function observeAntigravityAcpBrainSession(input: {
 
   const isIdle = (): boolean =>
     !promptOpen &&
+    !lane.openTurnId &&
     !openParentTasks.size &&
     !lane.translator.subagents.hasOpen() &&
     !children.hasOpen() &&
@@ -259,14 +273,16 @@ export function observeAntigravityAcpBrainSession(input: {
           wakeupTurn = null
           pendingWakeupCalls.length = 0
           relevant = true
-        } else if (event.type === 'turn.end' && isAcpPromptTurnId(event.turn)) {
+        } else if (event.type === 'turn.end' && (!event.turn || isAcpPromptTurnId(event.turn))) {
           promptOpen = false
           if (
+            !event.turn ||
             activePromptSawTraffic ||
             activePromptChars > 0 ||
             (event.state === 'completed' && event.outcome === 'success')
           ) {
-            latestPromptChars = activePromptChars
+            // Compaction ends with an unkeyed turn.end while resetting transcriptCharsInCycle.
+            latestPromptChars = event.turn ? activePromptChars : 0
           }
           graceTicks = PROMPT_SETTLE_GRACE_TICKS
           relevant = true

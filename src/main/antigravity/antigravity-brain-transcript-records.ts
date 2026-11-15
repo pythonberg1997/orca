@@ -11,7 +11,7 @@ const SPAWNED_SUBAGENT_JSON =
   /(?:^|\r?\n)Created the following subagent:\s*\r?\n(\{[\s\S]*?\r?\n\})/
 const BACKGROUND_TASK_ID = /(?:^|\r?\n)Tool is running as a background task with task id:\s*(\S+)/
 const SYSTEM_MESSAGE_ENTRY =
-  /\[Message\]\s+timestamp=\S+\s+sender=(\S+)\s+priority=\S+\s+content=([\s\S]*?)(?=\r?\n\[Message\]\s+timestamp=|\r?\n<\/SYSTEM_MESSAGE>|$)/g
+  /\[Message\]\s+(?:timestamp=\S+\s+)?sender=(\S+)\s+priority=(\S+)\s+content=([\s\S]*?)(?=\r?\n\[Message\]\s+(?:timestamp=\S+\s+)?sender=|\r?\n<\/SYSTEM_MESSAGE>|$)/g
 
 export type AntigravityTranscriptPaths = {
   full: string
@@ -28,11 +28,17 @@ type AntigravitySystemMessageItem = {
   content: string
   isTask: boolean
   stopsAllSubagents: boolean
+  wakesAgent: boolean
 }
 
 export type AntigravityBrainRecord =
   | {
       kind: 'user-input'
+      stepIndex?: number
+      status?: string
+    }
+  | {
+      kind: 'checkpoint'
       stepIndex?: number
       status?: string
     }
@@ -144,17 +150,21 @@ function parseSystemMessages(content: string | undefined): AntigravitySystemMess
   const messages: AntigravitySystemMessageItem[] = []
   for (const match of content.matchAll(SYSTEM_MESSAGE_ENTRY)) {
     const sender = match[1]?.trim()
+    const priority = match[2]?.trim() ?? ''
     if (!sender) {
       continue
     }
-    const body = (match[2] ?? '').trim()
+    const body = (match[3] ?? '').trim()
+    const stopsAllSubagents =
+      sender === 'system' &&
+      body.includes('All your subagents and background tasks have been stopped')
     messages.push({
       sender,
       content: body,
       isTask: sender.includes('/task-'),
-      stopsAllSubagents:
-        sender === 'system' &&
-        body.includes('All your subagents and background tasks have been stopped')
+      stopsAllSubagents,
+      // Low-priority notices are piggybacked onto explicit turns and never wake an idle agent.
+      wakesAgent: !stopsAllSubagents && priority !== 'MESSAGE_PRIORITY_LOW' && priority !== 'low'
     })
   }
   return messages
@@ -243,6 +253,9 @@ export function parseAntigravityBrainLine(line: string): AntigravityBrainRecord 
       status,
       messages: parseSystemMessages(content)
     }
+  }
+  if (source === 'SYSTEM' && type === 'CHECKPOINT') {
+    return { kind: 'checkpoint', stepIndex, status }
   }
   return { kind: 'other', stepIndex, status }
 }

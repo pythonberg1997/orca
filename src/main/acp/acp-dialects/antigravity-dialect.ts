@@ -4,7 +4,12 @@ import { AcpRpcError, acpErrorDataWords, type AcpAgentError } from '../transport
 import { readAcpPermissionRequest } from '../protocol/acp-permission-requests'
 import { acpPermissionPresentation } from '../requests/acp-timeline-requests'
 import type { ToolCallUpdate } from '../generated/acp-protocol.generated'
-import { pendingAcpResolution, type AcpDialect, type AcpRequestPresentation } from './acp-dialect'
+import {
+  pendingAcpResolution,
+  type AcpCompactionReply,
+  type AcpDialect,
+  type AcpRequestPresentation
+} from './acp-dialect'
 import { antigravityNotification, antigravityToolSubagents } from './antigravity-subagents'
 import { antigravityModelEfforts } from '../../antigravity/antigravity-model-catalog'
 
@@ -127,6 +132,20 @@ function promptErrorDetail(error: AcpAgentError): string | undefined {
   }
 }
 
+// Standalone `/compact` ends silently; summarization errors stream error steps and empty/already-compacted sessions fall through to the model.
+const COMPACTION_ERROR =
+  /^(?:context summarization:\s*|Agent execution terminated due to error\.?$)/i
+
+function compactionReply(text: string): AcpCompactionReply | undefined {
+  const reply = text.trim()
+  if (!reply) {
+    return undefined
+  }
+  return COMPACTION_ERROR.test(reply)
+    ? { outcome: 'failed', detail: reply }
+    : { outcome: 'skipped', detail: '' }
+}
+
 export const ANTIGRAVITY_ACP_DIALECT: AcpDialect = {
   // agy 1.5+ asks clarifying questions through form elicitation; 1.3 used interaction_ permissions.
   clientCapabilities: { elicitation: { form: {} } },
@@ -136,6 +155,7 @@ export const ANTIGRAVITY_ACP_DIALECT: AcpDialect = {
   toolSubagents: antigravityToolSubagents,
   notification: antigravityNotification,
   promptErrorDetail,
+  compactionReply,
   // Avoid using the full command line as the tool name.
   toolName: (update) => (update.kind === 'execute' ? 'execute' : undefined),
   // Logout would clear the account shared by every Antigravity chat on this host.

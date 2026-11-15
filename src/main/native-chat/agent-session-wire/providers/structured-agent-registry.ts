@@ -1,6 +1,7 @@
 // Reject capabilities without adapter implementations so declarations remain trustworthy.
 
 import type { AgentSessionCapabilities } from '../../../../shared/agent-session/agent-session-capabilities'
+import type { AgentSessionAccountHome } from '../../../../shared/agent-session/lifecycle/agent-session-account-home'
 import type { StructuredAgentDefinition } from './structured-agent-definition'
 import type { StructuredAgentSessionAdapter } from './structured-agent-session-adapter'
 
@@ -64,7 +65,16 @@ export class StructuredAgentRegistry {
   }
 
   /** Live sessions may narrow declared capabilities, never widen them. */
-  capabilities(agent: string): AgentSessionCapabilities | null {
-    return this.definition(agent)?.capabilities ?? null
+  capabilities(
+    agent: string,
+    accountHome?: AgentSessionAccountHome
+  ): AgentSessionCapabilities | null {
+    const definition = this.definition(agent)
+    if (!definition) {
+      return null
+    }
+    return accountHome && definition.capabilitiesForAccount
+      ? definition.capabilitiesForAccount(accountHome)
+      : definition.capabilities
   }
 }
