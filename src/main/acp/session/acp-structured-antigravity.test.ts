@@ -286,6 +286,145 @@ it("leaves a Full access host chat's plan approval to the person", async () => {
   expect(answered).toBe(false)
 })
 
+it('elicits multi-question and write-in answers on a Full access host chat', async () => {
+  const userHome = await mkdtemp(join(tmpdir(), 'orca-agy-elicit-'))
+  onTestFinished(() => rm(userHome, { recursive: true, force: true }))
+  const initSchema = z.object({
+    clientCapabilities: z
+      .object({ elicitation: z.object({ form: z.looseObject({}) }).optional() })
+      .optional()
+  })
+  let elicited: unknown
+  const rig = await openAcpAdapterRig({
+    spec: ANTIGRAVITY.hostBackend!.spec,
+    launch: {
+      args: ['acp', '--dangerously-skip-permissions'],
+      fullAccess: true,
+      env: { PATH: '/usr/bin', HOME: userHome, USERPROFILE: userHome }
+    },
+    script: (agent) =>
+      agent.on('session/prompt', (prompt) => {
+        const init = agent.frames.find((sent) => sent.method === 'initialize')
+        if (!initSchema.safeParse(init?.params).data?.clientCapabilities?.elicitation?.form) {
+          agent.reply(prompt, { stopReason: 'end_turn' })
+          return
+        }
+        // Shape emitted by agy 1.5's buildQuestionElicitation (`qN` + `qN_other` companions).
+        void agent
+          .request('ask-1', 'elicitation/create', {
+            sessionId: PROVIDER_SESSION,
+            toolCallId: 'call_ask_1',
+            mode: 'form',
+            message: 'The agent has 3 questions.',
+            requestedSchema: {
+              type: 'object',
+              properties: {
+                q1: {
+                  type: 'string',
+                  title: 'Merge strategy?',
+                  oneOf: [
+                    { const: 'rebase', title: '(Recommended) Rebase' },
+                    { const: 'merge', title: 'Merge commit' }
+                  ]
+                },
+                q1_other: {
+                  type: 'string',
+                  title: 'Other',
+                  description: 'Optional free-form answer to: Merge strategy?'
+                },
+                q2: {
+                  type: 'array',
+                  title: 'Checks to run?',
+                  items: {
+                    anyOf: [
+                      { const: 'lint', title: 'Lint' },
+                      { const: 'tc', title: 'Typecheck' }
+                    ]
+                  }
+                },
+                q2_other: {
+                  type: 'string',
+                  title: 'Other',
+                  description: 'Optional free-form answer to: Checks to run?'
+                },
+                q3_other: {
+                  type: 'string',
+                  title: 'Target branch?'
+                }
+              }
+            }
+          })
+          .then((reply) => {
+            elicited = reply.result
+            agent.reply(prompt, { stopReason: 'end_turn' })
+          })
+      })
+  })
+  await rig.acquire({ permissionMode: 'full-access' })
+  await sendHello(rig, 'send-1')
+  const question = await waitFor(async () => {
+    const found = (await rig.rig.rows()).find((row) => row.body.kind === 'question')
+    expect(found?.body).toMatchObject({
+      kind: 'question',
+      questions: [
+        {
+          id: 'q1',
+          header: 'Merge strategy?',
+          multiSelect: false,
+          options: [
+            { id: 'o1', label: '(Recommended) Rebase' },
+            { id: 'o2', label: 'Merge commit' }
+          ],
+          freeTextQuestionId: 'q1'
+        },
+        {
+          id: 'q2',
+          header: 'Checks to run?',
+          multiSelect: true,
+          options: [
+            { id: 'o1', label: 'Lint' },
+            { id: 'o2', label: 'Typecheck' }
+          ],
+          freeTextQuestionId: 'q2'
+        },
+        {
+          id: 'q3',
+          header: 'Target branch?',
+          multiSelect: false,
+          options: [],
+          freeTextQuestionId: 'q3'
+        }
+      ]
+    })
+    return found!
+  })
+  await rig.adapter.answerPrompt({
+    sessionId: SESSION,
+    itemId: question.itemId,
+    kind: 'question',
+    response: {
+      kind: 'answers',
+      answers: [
+        { questionId: 'q1', optionIds: [], other: 'squash' },
+        { questionId: 'q2', optionIds: ['o1', 'o2'], other: 'unit' },
+        { questionId: 'q3', optionIds: [], other: 'main' }
+      ]
+    },
+    fence: 1,
+    commit: async () => {}
+  })
+  await rig.settle()
+  expect(elicited).toEqual({
+    action: 'accept',
+    content: {
+      q1_other: 'squash',
+      q2: ['lint', 'tc'],
+      q2_other: 'unit',
+      q3_other: 'main'
+    }
+  })
+})
+
 it('stops a chat that has left the gate but is not loaded yet before the operation runs', async () => {
   const [initialized, opened] = await readAcpFixture('antigravity-v1-question')
   const rig = await openAcpAdapterRig({

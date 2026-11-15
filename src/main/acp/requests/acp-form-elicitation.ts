@@ -9,7 +9,7 @@ import { pendingAcpResolution, type AcpRequestPresentation } from '../acp-dialec
 import { AcpRpcError } from '../transport/acp-errors'
 
 export const ACP_FORM_ELICITATION_METHOD = 'elicitation/create'
-const OTHER_SUFFIXES = ['__other', '_custom'] as const
+const OTHER_SUFFIXES = ['__other', '_other', '_custom'] as const
 const NOT_SHOWN_ANSWER = `Not shown to the user: Orca shows at most ${MAX_JOURNAL_GROUPED_PROMPT_QUESTIONS} questions at once. Ask again.`
 
 const choiceSchema = z.looseObject({

@@ -128,6 +128,8 @@ function promptErrorDetail(error: AcpAgentError): string | undefined {
 }
 
 export const ANTIGRAVITY_ACP_DIALECT: AcpDialect = {
+  // agy 1.5+ asks clarifying questions through form elicitation; 1.3 used interaction_ permissions.
+  clientCapabilities: { elicitation: { form: {} } },
   request: (method, params) => questionRequest(method, params) ?? warnedApproval(method, params),
   normalizeToolUpdate,
   modelEfforts: antigravityModelEfforts,
