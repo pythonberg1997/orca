@@ -12,7 +12,7 @@ import {
   matchesAntigravitySwarmKillId,
   parseAntigravitySubagentToolInput
 } from '../../../antigravity-subagent-tool-inputs'
-import { sliceAtCodeUnitLimit } from '../../../surrogate-safe-text-slice'
+import { sliceAtCodeUnitLimit } from '../../../text/surrogate-safe-text-slice'
 import type { HookListenerState } from '../../listener-state'
 import { readAntigravityToolCall } from './antigravity-tool-fields'
 import { isAntigravityStopStillBusy } from './antigravity-event-rules'
@@ -29,6 +29,7 @@ export type AntigravityPaneChildWork = {
   pendingSpawns?: AntigravityPendingSpawn[]
   nextPendingSeq?: number
   subagents?: Map<string, AgentSubagentSnapshot>
+  completedTranscript?: string
 }
 
 export function isAntigravityFeedbackTool(toolName: string | undefined): boolean {

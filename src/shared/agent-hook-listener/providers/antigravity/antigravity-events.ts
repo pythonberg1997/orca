@@ -20,6 +20,15 @@ import {
 
 export { isAntigravityFeedbackTool } from './antigravity-subagent-work'
 
+function clearAntigravityChildWork(state: HookListenerState, paneKey: string): void {
+  const completedTranscript = state.antigravityChildWorkByPaneKey.get(paneKey)?.completedTranscript
+  if (completedTranscript) {
+    state.antigravityChildWorkByPaneKey.set(paneKey, { completedTranscript })
+  } else {
+    state.antigravityChildWorkByPaneKey.delete(paneKey)
+  }
+}
+
 export function normalizeAntigravityEvent(
   state: HookListenerState,
   eventName: unknown,
@@ -32,7 +41,7 @@ export function normalizeAntigravityEvent(
   const conversationId = readFirstString(hookPayload, ['conversationId', 'conversation_id'])
   const currentAgent = state.lastStatusByPaneKey.get(paneKey)?.payload.agentType
   if (currentAgent && currentAgent !== 'antigravity') {
-    state.antigravityChildWorkByPaneKey.delete(paneKey)
+    clearAntigravityChildWork(state, paneKey)
   }
   const hasUserInput = Boolean(readFirstString(hookPayload, ['lastUserInput']))
   const existingWork = state.antigravityChildWorkByPaneKey.get(paneKey)
@@ -50,14 +59,17 @@ export function normalizeAntigravityEvent(
         now
       )
     }
-    state.antigravityChildWorkByPaneKey.delete(paneKey)
+    clearAntigravityChildWork(state, paneKey)
   }
+  const latestEntry = state.antigravityChildWorkByPaneKey.get(paneKey)
   if (eventName === 'PreInvocation') {
-    state.antigravityCompletedTranscriptByPaneKey.delete(paneKey)
+    if (latestEntry) {
+      delete latestEntry.completedTranscript
+    }
   } else if (
     transcriptPath &&
     eventName !== 'Stop' &&
-    state.antigravityCompletedTranscriptByPaneKey.get(paneKey) === transcriptPath
+    latestEntry?.completedTranscript === transcriptPath
   ) {
     // Ignore bookkeeping PostToolUse after Stop so finished rows do not resurrect.
     return null
@@ -139,9 +151,10 @@ export function normalizeAntigravityEvent(
   })
   // Stop between tools can report fullyIdle=false; only an idle Stop is terminal.
   if (eventName === 'Stop' && !stopStillBusy) {
-    state.antigravityChildWorkByPaneKey.delete(paneKey)
     if (transcriptPath) {
-      state.antigravityCompletedTranscriptByPaneKey.set(paneKey, transcriptPath)
+      state.antigravityChildWorkByPaneKey.set(paneKey, { completedTranscript: transcriptPath })
+    } else {
+      state.antigravityChildWorkByPaneKey.delete(paneKey)
     }
   }
   return payload

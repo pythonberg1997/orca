@@ -244,6 +244,7 @@ export const GROK_ACP_DIALECT: AcpDialect = {
     return parsed.success ? parsed.data['x.ai/tool'].name : undefined
   },
   request: grokRequest,
+  elicitationComplete: (method) => method.replace(/^_/, '') === 'x.ai/mcp/elicit_complete',
   settleRequest: grokSettleRequest,
   toolBackgroundTasks: grokToolBackgroundTasks,
   toolSubagents: grokToolSubagents,
@@ -254,7 +255,7 @@ export const GROK_ACP_DIALECT: AcpDialect = {
       ? promptCompleteSchema.safeParse(params).data
       : undefined,
   contextWindow,
-  modelEfforts: ({ modelInfo }) => (modelInfo ? grokModelEfforts(modelInfo) : undefined),
+  modelEfforts: grokModelEfforts,
   builtinCommands: grokBuiltinCommands,
   hookBlock,
   promptErrorDetail: (error) => promptErrorDataSchema.safeParse(error.data).data?.message,

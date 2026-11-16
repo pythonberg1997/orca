@@ -1,7 +1,7 @@
 // Reject capabilities without adapter implementations so declarations remain trustworthy.
 
 import type { AgentSessionCapabilities } from '../../../../shared/agent-session/agent-session-capabilities'
-import type { AgentSessionAccountHome } from '../../../../shared/agent-session/lifecycle/agent-session-account-home'
+import type { AgentSessionAccountHome } from '../../../../shared/agent-session/lifecycle/accounts/agent-session-account-home'
 import type { StructuredAgentDefinition } from './structured-agent-definition'
 import type { StructuredAgentSessionAdapter } from './structured-agent-session-adapter'
 

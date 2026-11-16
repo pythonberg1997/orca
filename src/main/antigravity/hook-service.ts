@@ -7,6 +7,7 @@ import type {
 } from '../../shared/agent-hook-listener/configuration/agent-hook-types'
 import { getSharedManagedScriptPath } from '../agent-hooks/installation/scripts/managed-hook-script-path'
 import { readHooksJson } from '../agent-hooks/installation/configuration/hooks-json-read'
+import { wrapPosixHookCommand } from '../agent-hooks/installation/commands/posix-hook-command'
 import { writeHooksJson } from '../agent-hooks/installation/configuration/hooks-json-write'
 import { writeManagedScript } from '../agent-hooks/installation/scripts/managed-hook-script-write'
 import type { HookDefinition } from '../agent-hooks/installation/configuration/hook-config-schema'
@@ -22,12 +23,7 @@ import {
   refreshManagedScriptIfPresent,
   scriptStillExists
 } from '../agent-hooks/installation/scripts/managed-hook-script-refresh'
-import {
-  ANTIGRAVITY_EVENTS,
-  ANTIGRAVITY_PRE_TOOL_USE_DECISION,
-  getAntigravityEventStdout,
-  type AntigravityEvent
-} from './hook-events'
+import { ANTIGRAVITY_EVENTS, getAntigravityNoOpStdout, type AntigravityEvent } from './hook-events'
 import { quotePosixShell } from '../../shared/shell/launch/shell-argument-quoting'
 import { HOOK_PARENT_CAPTURE } from '../agent-hooks/installation/scripts/hook-process-capture'
 import { getManagedScript, getWindowsWrapperScript } from './hook-script'
@@ -57,20 +53,18 @@ function getWindowsWrapperScriptPath(event: AntigravityEvent): string {
 }
 
 function getPosixManagedCommand(scriptPath: string, event: AntigravityEvent): string {
-  const quotedScript = quotePosixShell(scriptPath)
-  const eventStdout = quotePosixShell(getAntigravityEventStdout(event.eventName))
-  // Keep tools usable if the managed script disappears: silence denies PreToolUse.
-  const missingFallback =
-    event.eventName === 'PreToolUse'
-      ? `printf '%s\\n' ${quotePosixShell(ANTIGRAVITY_PRE_TOOL_USE_DECISION)}`
-      : ':'
-  const body =
-    `if [ -f ${quotedScript} ] && [ -r ${quotedScript} ] && [ -x ${quotedScript} ]; then ` +
-    `if [ -z "\${ORCA_PANE_KEY:-}" ]; then printf '%s\\n' ${eventStdout}; ` +
-    `else ${HOOK_PARENT_CAPTURE}ORCA_ANTIGRAVITY_EVENT=${quotePosixShell(event.eventName)} /bin/sh ${quotedScript}; fi; ` +
-    `else ${missingFallback}; fi`
+  const command = wrapPosixHookCommand(
+    scriptPath,
+    { ORCA_ANTIGRAVITY_EVENT: event.eventName },
+    // Outside an Orca pane, skip the script's shell and python3 start on every agy event.
+    {
+      fallbackStdout: getAntigravityNoOpStdout(event.eventName),
+      requiredEnvVar: 'ORCA_PANE_KEY',
+      stdinMayStayOpen: true
+    }
+  )
   // ACP hosts tokenize the command into argv; the shell must be the executable, not `if`.
-  return `/bin/sh -c ${quotePosixShell(body)}`
+  return `/bin/sh -c ${quotePosixShell(`${HOOK_PARENT_CAPTURE}${command}`)}`
 }
 
 function getManagedCommand(scriptPath: string, event: AntigravityEvent): string {

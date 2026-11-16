@@ -28,20 +28,15 @@ export const ANTIGRAVITY_EVENTS = [
 export const ANTIGRAVITY_PRE_TOOL_USE_DECISION = '{"decision":"ask"}'
 export const ANTIGRAVITY_STOP_DECISION = '{"decision":""}'
 
-export type AntigravityEvent = (typeof ANTIGRAVITY_EVENTS)[number]
-
-export function getAntigravityEventStdout(eventName: AntigravityEvent['eventName']): string {
-  switch (eventName) {
-    case 'Stop':
-      return ANTIGRAVITY_STOP_DECISION
-    case 'PreToolUse':
-      return ANTIGRAVITY_PRE_TOOL_USE_DECISION
-    case 'PreInvocation':
-    case 'PostInvocation':
-    case 'PostToolUse':
-      return '{}'
+/** The no-op reply the managed script prints, for paths that skip the script. */
+export function getAntigravityNoOpStdout(eventName: string): string {
+  if (eventName === 'PreToolUse') {
+    return ANTIGRAVITY_PRE_TOOL_USE_DECISION
   }
+  return eventName === 'Stop' ? ANTIGRAVITY_STOP_DECISION : '{}'
 }
+
+export type AntigravityEvent = (typeof ANTIGRAVITY_EVENTS)[number]
 
 export const ANTIGRAVITY_MANAGED_SCRIPT_FILE_NAMES = [
   'antigravity-hook.sh',

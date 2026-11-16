@@ -1,7 +1,9 @@
+import type { AgentHookEventPayload } from '../../../../shared/agent-hook-listener/listener-event'
 import type { ParsedAgentStatusPayload } from '../../../../shared/agent-status/contracts/agent-status-types'
 import { isAgentStatusHeldOpenByChildWork } from '../../../../shared/agent-status/lifecycle/agent-lead-status-fold'
 import { AGENT_STATUS_STALE_AFTER_MS } from '../../../../shared/agent-status/contracts/agent-status-freshness'
 import type { EnrichedAgentHookEventPayload } from '../server-types'
+import type { PaneTimers } from './pane-timers'
 
 // Long tool calls can be hook-silent; allow sustained disagreement before yielding to OSC 7501.
 export const HOOK_SILENCE_BEFORE_PROGRAM_STATUS_FALLBACK_MS = 2 * 60 * 1000
@@ -106,4 +108,46 @@ export function antigravityScreenStatusHookYieldEndsAt(
   return previous.payload.workingMode === 'monitoring'
     ? previous.receivedAt + AGENT_STATUS_STALE_AFTER_MS
     : Infinity
+}
+
+export function terminalStatusHookYieldEndsAt(
+  previous: EnrichedAgentHookEventPayload | undefined,
+  payload: ParsedAgentStatusPayload,
+  fromProgramStatus: boolean,
+  programWorkingSince?: number
+): number | undefined {
+  return fromProgramStatus
+    ? programStatusHookYieldEndsAt(previous, payload, programWorkingSince)
+    : antigravityScreenStatusHookYieldEndsAt(previous, payload)
+}
+
+export function syncTerminalHookSilenceRecheck(input: {
+  timers: PaneTimers
+  paneKey: string
+  now: number
+  yieldEndsAt: number | undefined
+  previous: EnrichedAgentHookEventPayload | undefined
+  lastStatusByPaneKey: ReadonlyMap<string, AgentHookEventPayload>
+  reoffer: (currentPaneKey: string) => void
+}): boolean {
+  const { timers, paneKey, now, yieldEndsAt, previous, lastStatusByPaneKey, reoffer } = input
+  const hookOwnsAgent = yieldEndsAt !== undefined && now < yieldEndsAt
+  if (hookOwnsAgent && previous && Number.isFinite(yieldEndsAt)) {
+    const yieldedTo = previous.receivedAt
+    timers.defer(paneKey, yieldEndsAt - now + 1, (currentPaneKey) => {
+      const row = lastStatusByPaneKey.get(currentPaneKey)
+      // Re-offer only against the hook observation this report yielded to.
+      if (
+        row &&
+        row.providerSessionOnly !== true &&
+        'receivedAt' in row &&
+        row.receivedAt === yieldedTo
+      ) {
+        reoffer(currentPaneKey)
+      }
+    })
+  } else {
+    timers.cancel(paneKey)
+  }
+  return hookOwnsAgent
 }

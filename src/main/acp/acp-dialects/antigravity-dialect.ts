@@ -11,7 +11,7 @@ import {
   type AcpRequestPresentation
 } from './acp-dialect'
 import { antigravityNotification, antigravityToolSubagents } from './antigravity-subagents'
-import { antigravityModelEfforts } from '../../antigravity/antigravity-model-catalog'
+import { antigravityFamilyEfforts } from '../../antigravity/antigravity-model-catalog'
 
 // interaction_ permissions are questions, even in yolo mode; never auto-approve them.
 function questionRequest(method: string, params: unknown): AcpRequestPresentation | undefined {
@@ -151,7 +151,7 @@ export const ANTIGRAVITY_ACP_DIALECT: AcpDialect = {
   clientCapabilities: { elicitation: { form: {} } },
   request: (method, params) => questionRequest(method, params) ?? warnedApproval(method, params),
   normalizeToolUpdate,
-  modelEfforts: antigravityModelEfforts,
+  familyEfforts: antigravityFamilyEfforts,
   toolSubagents: antigravityToolSubagents,
   notification: antigravityNotification,
   promptErrorDetail,

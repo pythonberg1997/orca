@@ -1,20 +1,22 @@
-import { ANTIGRAVITY_BASE_EFFORT_CHOICES } from '../../shared/agent-session/options/agent-session-option-catalog-antigravity'
+import { ANTIGRAVITY_BASE_EFFORT_CHOICES } from '../../shared/agent-session/options/catalog-providers/agent-session-option-catalog-antigravity'
 import type {
   AgentSessionModelOption,
   AgentSessionOptionChoice
 } from '../../shared/agent-session/agent-session-wire'
-import type { AcpModelEffortMenu } from '../acp/acp-dialects/acp-dialect'
+import type { AcpAdvertisedEfforts } from '../acp/acp-dialects/acp-dialect'
 import type { ModelInfo } from '../acp/generated/acp-protocol.generated'
 
 export const ANTIGRAVITY_MODEL_LISTING_ARGS = ['models'] as const
 
 const EFFORT_ORDER: readonly AgentSessionOptionChoice[] = [
+  { value: 'none', label: 'None' },
+  { value: 'minimal', label: 'Minimal' },
   ...ANTIGRAVITY_BASE_EFFORT_CHOICES,
   { value: 'max', label: 'Max' }
 ]
 
 const KNOWN_EFFORTS = new Set(EFFORT_ORDER.map((choice) => choice.value))
-const TRAILING_EFFORT_LABEL = /\s*\((?:low|medium|high|xhigh|extra|max)\)\s*$/i
+const TRAILING_EFFORT_LABEL = /\s*\((?:none|minimal|low|medium|high|xhigh|extra|max)\)\s*$/i
 
 function splitCompositeModelId(modelId: string): { baseId: string; effort: string } | null {
   const dash = modelId.lastIndexOf('-')
@@ -28,7 +30,7 @@ function splitCompositeModelId(modelId: string): { baseId: string; effort: strin
   return { baseId: modelId.slice(0, dash), effort }
 }
 
-function buildEffortMenu(variantEfforts: readonly string[]): AcpModelEffortMenu {
+function buildEffortMenu(variantEfforts: readonly string[]): AcpAdvertisedEfforts {
   const present = new Set(variantEfforts)
   const defaultEffort = variantEfforts[0]
   return {
@@ -40,14 +42,11 @@ function buildEffortMenu(variantEfforts: readonly string[]): AcpModelEffortMenu 
 }
 
 /** Antigravity reports per-model thinking variants as `<modelId>-<effort>` entries in `availableModels`. */
-export function antigravityModelEfforts(input: {
-  modelId: string
-  modelInfo?: ModelInfo
-  availableModels?: readonly ModelInfo[]
-  hasModelConfigOption: boolean
-}): AcpModelEffortMenu | undefined {
-  const { modelId, modelInfo, availableModels, hasModelConfigOption } = input
-  if (!availableModels?.length) {
+export function antigravityFamilyEfforts(
+  modelId: string,
+  availableModels: readonly ModelInfo[]
+): AcpAdvertisedEfforts | undefined {
+  if (!availableModels.length) {
     return undefined
   }
   const prefix = `${modelId}-`
@@ -64,7 +63,7 @@ export function antigravityModelEfforts(input: {
   if (variantEfforts.length > 0) {
     return buildEffortMenu(variantEfforts)
   }
-  if (hasModelConfigOption && modelInfo) {
+  if (availableModels.some((entry) => entry.modelId === modelId)) {
     return { efforts: [], declaredDefaultEffort: null }
   }
   return undefined

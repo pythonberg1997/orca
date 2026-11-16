@@ -7,15 +7,15 @@ import {
 } from '../../../shared/workspace-layout/stable-pane-id'
 import { terminalStatusPayloadMatchesHook } from '../../../shared/agent-status/lifecycle/agent-terminal-status-equivalence'
 import type { ParsedAgentStatusPayload } from '../../../shared/agent-status/contracts/agent-status-types'
-import { agentProviderSessionsEqual } from '../../../shared/agent-session/lifecycle/agent-session-resume'
+import { agentProviderSessionsEqual } from '../../../shared/agent-session/lifecycle/resume/agent-provider-session-equality'
 import type { EnrichedAgentHookEventPayload } from './server-types'
 import type { AgentHookEventPayload } from '../../../shared/agent-hook-listener/listener-event'
 import { agentSubagentsEqual } from '../../../shared/agent-status/contracts/agent-status-subagent-snapshot'
 import { isAgentStatusHeldOpenByChildWork } from '../../../shared/agent-status/lifecycle/agent-lead-status-fold'
 import { AgentHookServerIngestNormalization } from './server-ingest-normalization'
 import {
-  antigravityScreenStatusHookYieldEndsAt,
-  programStatusHookYieldEndsAt
+  syncTerminalHookSilenceRecheck,
+  terminalStatusHookYieldEndsAt
 } from './program-status/hook-precedence'
 import type { ProgramStatusFacet } from '../../../shared/program-status/facet'
 
@@ -202,6 +202,9 @@ export abstract class AgentHookServerIngestTerminal extends AgentHookServerInges
         ? this.programStatusFacets.noteState(paneKey, payload, now)
         : undefined
     if (event.removesProgramStatusRow === true) {
+      if (this.preservesStoppingDone(paneKey)) {
+        return
+      }
       this.hookSilenceRechecks.cancel(paneKey)
       if (previous?.observation?.origin === 'osc') {
         // The program row ended; the pane, aliases and caches remain live.
@@ -213,32 +216,26 @@ export abstract class AgentHookServerIngestTerminal extends AgentHookServerInges
       }
       return
     }
-    const yieldEndsAt =
-      event.fromProgramStatus === true
-        ? programStatusHookYieldEndsAt(previous, payload, workingSince)
-        : antigravityScreenStatusHookYieldEndsAt(previous, payload)
-    const hookOwnsAgent = yieldEndsAt !== undefined && now < yieldEndsAt
-    const silenceRechecks =
-      event.fromProgramStatus === true ? this.hookSilenceRechecks : this.screenStatusSilenceRechecks
-    if (hookOwnsAgent && previous && Number.isFinite(yieldEndsAt)) {
-      const yieldedTo = previous.receivedAt
-      const delayMs = yieldEndsAt - now
-      silenceRechecks.defer(paneKey, delayMs + 1, (currentPaneKey) => {
-        const row = this.state.lastStatusByPaneKey.get(currentPaneKey)
-        // Re-offer only against the hook observation this report yielded to.
-        if (
-          row &&
-          row.providerSessionOnly !== true &&
-          'receivedAt' in row &&
-          row.receivedAt === yieldedTo
-        ) {
-          const tabId = parsePaneKey(currentPaneKey)?.tabId ?? event.tabId
-          this.ingestTerminalStatus({ ...event, paneKey: currentPaneKey, tabId })
-        }
-      })
-    } else {
-      silenceRechecks.cancel(paneKey)
-    }
+    const fromProgramStatus = event.fromProgramStatus === true
+    const hookOwnsAgent = syncTerminalHookSilenceRecheck({
+      timers: fromProgramStatus ? this.hookSilenceRechecks : this.screenStatusSilenceRechecks,
+      paneKey,
+      now,
+      yieldEndsAt: terminalStatusHookYieldEndsAt(
+        previous,
+        payload,
+        fromProgramStatus,
+        workingSince
+      ),
+      previous,
+      lastStatusByPaneKey: this.state.lastStatusByPaneKey,
+      reoffer: (currentPaneKey) =>
+        this.ingestTerminalStatus({
+          ...event,
+          paneKey: currentPaneKey,
+          tabId: parsePaneKey(currentPaneKey)?.tabId ?? event.tabId
+        })
+    })
     if (
       hookOwnsCommand ||
       hookOwnsAgent ||

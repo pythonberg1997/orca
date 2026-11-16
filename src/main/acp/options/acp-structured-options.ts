@@ -1,9 +1,9 @@
-import { acpSelectChoices } from './acp-select-choices'
-import { projectAcpSessionModels } from './acp-session-model-projection'
+import { acpEffortOption, acpSelectChoices } from './acp-select-choices'
+import { acpModelMenuModels, withFastModeOption } from './acp-model-menu'
 import { acpInitializeForkSupport } from '../capabilities/acp-fork-support'
 import type { AgentSessionSlashCommand } from '../../../shared/agent-session/agent-session-wire'
 
-import type { AgentSessionOptionsResult } from '../../../shared/agent-session/options/agent-session-options-result'
+import type { AgentSessionOptionsResult } from '../../../shared/agent-session/options/protocol/agent-session-options-result'
 import type { AcpDialect } from '../acp-dialects/acp-dialect'
 import {
   unpickedSessionConfiguredChoice,
@@ -34,10 +34,12 @@ export class AcpStructuredOptions {
     private readonly dialect: Pick<
       AcpDialect,
       | 'modelEfforts'
+      | 'familyEfforts'
       | 'withheldCommands'
       | 'effortChangesModel'
       | 'clampsUnlistedEffort'
       | 'builtinCommands'
+      | 'fastConfigId'
     > = {}
   ) {}
 
@@ -89,7 +91,9 @@ export class AcpStructuredOptions {
       this.unobservedCurrent.add(key)
     }
     if (key === 'model') {
+      // Each model has its own effort and Fast defaults, so both are written again.
       this.appliedInput.delete('effort')
+      this.appliedInput.delete('fastMode')
       this.unobservedCurrent.add('effort')
     }
     if (key === 'effort' && this.dialect.effortChangesModel) {
@@ -153,7 +157,7 @@ export class AcpStructuredOptions {
       if (this.select('model')) {
         this.unobservedCurrent.delete('model')
       }
-      if (this.select('thought_level')) {
+      if (this.effortOption()) {
         this.unobservedCurrent.delete('effort')
       }
     }
@@ -206,7 +210,7 @@ export class AcpStructuredOptions {
   }
 
   offersEffort(value: string): boolean {
-    const option = this.select('thought_level')
+    const option = this.effortOption()
     return !!(
       option &&
       (this.dialect.clampsUnlistedEffort ||
@@ -215,6 +219,10 @@ export class AcpStructuredOptions {
   }
 
   write(key: string, value: string): AcpOptionWrite | null {
+    if (key === 'fastMode') {
+      const fast = this.fastOption()
+      return fast ? { method: 'config', configId: fast.id, value } : null
+    }
     if (key === 'model') {
       const option = this.select('model')
       if (option) {
@@ -223,26 +231,29 @@ export class AcpStructuredOptions {
       return this.models ? { method: 'model', modelId: value } : null
     }
     if (key === 'effort') {
-      const option = this.select('thought_level')
+      const option = this.effortOption()
       return option ? { method: 'config', configId: option.id, value } : null
     }
     return null
   }
 
   /** Native choices never establish an unobserved model's capability or configured default. */
-  read(): Pick<AgentSessionOptionsResult, 'models' | 'current' | 'forkSupport'> {
+  read(): Pick<
+    AgentSessionOptionsResult,
+    'models' | 'current' | 'forkSupport' | 'fastModeSupport'
+  > {
     const modelOption = this.select('model')
-    const effortOption = this.select('thought_level')
+    const effortOption = this.effortOption()
     const currentModel = (modelOption?.currentValue ?? this.models?.currentModelId) || undefined
-    const models = projectAcpSessionModels({
+    const models = acpModelMenuModels({
+      dialect: this.dialect,
       modelOption,
       effortOption,
-      models: this.models,
-      currentModel,
-      modelEfforts: this.dialect.modelEfforts
+      state: this.models,
+      currentModel
     })
     const confirmed = [...(currentModel ? ['model'] : []), ...(effortOption ? ['effort'] : [])]
-    return {
+    const menu = {
       models,
       forkSupport: this.forkSupport,
       current: {
@@ -251,6 +262,7 @@ export class AcpStructuredOptions {
         confirmed
       }
     }
+    return withFastModeOption(menu, this.fastOption())
   }
 
   /** Unpicked new-session default: null if unlisted, undefined if the session cannot establish it. */
@@ -301,8 +313,21 @@ export class AcpStructuredOptions {
   private currentValues(): Readonly<Record<string, string | undefined>> {
     return {
       model: (this.select('model')?.currentValue ?? this.models?.currentModelId) || undefined,
-      effort: this.select('thought_level')?.currentValue
+      effort: this.effortOption()?.currentValue
     }
+  }
+
+  private effortOption(): SelectOption | null {
+    return acpEffortOption(this.configOptions)
+  }
+
+  private fastOption(): SelectOption | null {
+    const id = this.dialect.fastConfigId
+    if (!id) {
+      return null
+    }
+    const option = this.configOptions.find((entry) => entry.id === id)
+    return option && isSelect(option) ? option : null
   }
 
   private select(category: string): SelectOption | null {

@@ -1,7 +1,7 @@
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isRecord } from '../../shared/agent-status/child-work/agent-status-child-work-value-guards'
-import { ANTIGRAVITY_ACP_HOME } from '../../shared/antigravity-session-origin'
+import { ANTIGRAVITY_ACP_HOME } from '../../shared/agent-session/lifecycle/provider-handles/antigravity-session-origin'
 import { MAX_SESSION_TRANSCRIPT_RECORD_BYTES } from '../ai-vault/transcripts/session-transcript-record-budget'
 import { antigravityUserHome } from './antigravity-chat-user-skills'
 

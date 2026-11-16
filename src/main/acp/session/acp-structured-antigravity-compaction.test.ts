@@ -8,7 +8,7 @@ import { agentJournalItemKey } from '../../../shared/agent-session/journal/agent
 import {
   agentJournalTurnBody,
   readAgentJournalTurn
-} from '../../../shared/agent-session/lifecycle/agent-session-turn-record'
+} from '../../../shared/agent-session/lifecycle/records/agent-session-turn-record'
 import { structuredAgentSessionCommandTurn } from '../../../shared/agent-session/view/structured-agent-session-command-turn-identity'
 import { projectStructuredAgentSessionStatusSummary } from '../../../shared/agent-session/view/structured-agent-session-projection'
 import { antigravityBrainTranscriptPaths } from '../../antigravity/antigravity-brain-transcript-records'

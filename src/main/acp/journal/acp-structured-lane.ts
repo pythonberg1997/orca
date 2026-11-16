@@ -20,7 +20,6 @@ import {
   neverThrowingStructuredAgentSessionLogger,
   type StructuredAgentSessionLogger
 } from '../../native-chat/agent-session-wire/host/structured-agent-session-logger'
-import { createAcpOwnershipReader } from './acp-ownership-reader'
 import { matchesAcpRequestRow } from './acp-request-row-identity'
 import type { SessionNotification } from '../generated/acp-protocol.generated'
 import type { AcpTextDrop } from '../timeline/acp-turn-messages'
@@ -79,9 +78,6 @@ export class AcpStructuredLane {
       sessionId: deps.providerSessionId,
       dialect: deps.dialect,
       agentName: deps.agentName,
-      ownership: createAcpOwnershipReader(this.requestIdentity, deps.providerSessionId, () =>
-        deps.sink.journalItems()
-      ),
       onTextDropped: (drop) => this.reportTextDrop(drop)
     })
     this.assembler = createProviderTimelineAssembler({

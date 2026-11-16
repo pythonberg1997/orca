@@ -1,4 +1,4 @@
-import { BoundedMap } from '../../shared/bounded-map'
+import { BoundedMap } from '../../shared/collections/bounded-map'
 import { isRecord } from '../../shared/agent-status/child-work/agent-status-child-work-value-guards'
 import type { SessionNotification } from '../acp/generated/acp-protocol.generated'
 

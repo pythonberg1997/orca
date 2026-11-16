@@ -10,12 +10,12 @@ import {
 } from '../agent-status/transport/agent-status-legacy-adapter'
 import type { AgentStatusLegacyIngressCaller } from '../agent-status/transport/agent-status-legacy-ingress-manifest'
 import type { ClaudeLaunchedBackgroundTasks } from './providers/claude/background-tasks/claude-owed-task-notifications'
-import type { ClaudeSubagentRoster } from '../claude-subagent-roster'
+import type { ClaudeSubagentRoster } from './providers/claude/lifecycle/claude-subagent-roster'
 import type { ClaudeToolRequest } from './claude-tool-request-identity'
-import type { CodexSubagentRoster } from '../codex-subagent-roster'
-import type { CodexSubagentTranscriptState } from '../codex-subagent-transcript'
+import type { CodexSubagentRoster } from './providers/codex/codex-subagent-roster'
+import type { CodexSubagentTranscriptState } from './providers/codex/codex-subagent-transcript'
 import type { CodexAsyncQuestions } from './providers/codex/codex-async-questions'
-import type { MuseSessionLogState } from '../muse-session-log'
+import type { MuseSessionLogState } from './providers/muse/muse-session-log'
 import type { AgentHookEventPayload, ToolSnapshot } from './listener-event'
 import {
   deletePaneScopedCacheEntry,
@@ -23,7 +23,7 @@ import {
   movePaneScopedMapEntries,
   movePaneScopedSetEntries
 } from './pane-scoped-cache-entries'
-import type { JcodeUserPromptEvidence } from '../jcode-session-files'
+import type { JcodeUserPromptEvidence } from './providers/jcode/jcode-session-files'
 import type { JcodeHelperPermissionWait } from './providers/jcode/jcode-helper-permission-wait'
 import type { AntigravityPaneChildWork } from './providers/antigravity/antigravity-subagent-work'
 import type { HookRootAttempt } from './presence/hook-process-root-evidence'
@@ -43,9 +43,7 @@ export type HookListenerState = {
   eventReplyCandidate: string | undefined
   /** Read-only compatibility view. All writes pass through the isolated legacy adapter. */
   lastStatusByPaneKey: ReadonlyMap<string, AgentHookEventPayload>
-  antigravityCompletedTranscriptByPaneKey: Map<string, string>
-  /** Work outliving the turn, kept until agy's fully idle Stop: the conversation that spawned in-process subagents,
-   *  and run_command steps agy backgrounded (PreToolUse seen, the PostToolUse it sends when the command ends not yet). */
+  /** Outliving child/command work (until agy's idle Stop) and completed transcript path per pane. */
   antigravityChildWorkByPaneKey: Map<string, AntigravityPaneChildWork>
   /** Journal-backed prompt for each jcode pane's current turn; see readJcodeTurnPrompt. */
   jcodeTurnPromptByPaneKey: Map<string, JcodeUserPromptEvidence | null>
@@ -146,7 +144,6 @@ export function createHookListenerState(
     lastToolByPaneKey: new Map(),
     eventReplyCandidate: undefined,
     lastStatusByPaneKey: adapter.view,
-    antigravityCompletedTranscriptByPaneKey: new Map(),
     antigravityChildWorkByPaneKey: new Map(),
     jcodeTurnPromptByPaneKey: new Map(),
     jcodeHelperPermissionWaitByPaneKey: new Map(),
@@ -221,18 +218,11 @@ export function getLegacyStatusListingOrder(
   return legacyStatusAdapter(state).listingOrder(paneKey)
 }
 
-export function clearPaneCacheState(state: HookListenerState, paneKey: string): void {
+export function clearPaneProcessCacheState(state: HookListenerState, paneKey: string): void {
   deletePaneScopedCacheEntry(state.lastPromptByPaneKey, paneKey)
   deletePaneScopedCacheEntry(state.lastToolByPaneKey, paneKey)
   deletePaneScopedCacheEntry(state.jcodeTurnPromptByPaneKey, paneKey)
   deletePaneScopedCacheEntry(state.jcodeHelperPermissionWaitByPaneKey, paneKey)
-  deleteLegacyAgentStatus(state, paneKey)
-  for (const key of state.lastStatusByPaneKey.keys()) {
-    if (key.startsWith(`${paneKey}\0`)) {
-      deleteLegacyAgentStatus(state, key)
-    }
-  }
-  deletePaneScopedCacheEntry(state.antigravityCompletedTranscriptByPaneKey, paneKey)
   deletePaneScopedCacheEntry(state.antigravityChildWorkByPaneKey, paneKey)
   deletePaneScopedSetEntry(state.ampCompletedCacheKeys, paneKey)
   deletePaneScopedCacheEntry(state.claudeConsumedCompactPromptIdByPaneKey, paneKey)
@@ -257,8 +247,22 @@ export function clearPaneCacheState(state: HookListenerState, paneKey: string): 
   unbindOpenCodeSessionsOfPane(state, paneKey)
   deletePaneScopedCacheEntry(state.lastLaunchTokenByPaneKey, paneKey)
   state.hermesTurnByPaneKey.delete(paneKey)
-  // A disposed pane's unfinished evidence and exit intent die with it.
+  // Unfinished evidence and exit intent belong to the ended process.
   deletePaneScopedCacheEntry(state.hookRootAttempts, paneKey)
+}
+
+export function clearPaneCacheState(state: HookListenerState, paneKey: string): void {
+  clearPaneProcessCacheState(state, paneKey)
+  clearPaneStatusCacheState(state, paneKey)
+}
+
+export function clearPaneStatusCacheState(state: HookListenerState, paneKey: string): void {
+  deleteLegacyAgentStatus(state, paneKey)
+  for (const key of state.lastStatusByPaneKey.keys()) {
+    if (key.startsWith(`${paneKey}\0`)) {
+      deleteLegacyAgentStatus(state, key)
+    }
+  }
 }
 
 export function movePaneCacheState(
@@ -272,7 +276,6 @@ export function movePaneCacheState(
   movePaneScopedMapEntries(state.lastPromptByPaneKey, fromPaneKey, toPaneKey)
   movePaneScopedMapEntries(state.lastToolByPaneKey, fromPaneKey, toPaneKey)
   moveLegacyAgentStatuses(state, fromPaneKey, toPaneKey)
-  movePaneScopedMapEntries(state.antigravityCompletedTranscriptByPaneKey, fromPaneKey, toPaneKey)
   movePaneScopedMapEntries(state.antigravityChildWorkByPaneKey, fromPaneKey, toPaneKey)
   movePaneScopedMapEntries(state.jcodeTurnPromptByPaneKey, fromPaneKey, toPaneKey)
   movePaneScopedMapEntries(state.jcodeHelperPermissionWaitByPaneKey, fromPaneKey, toPaneKey)
@@ -304,7 +307,6 @@ export function movePaneCacheState(
 export function clearPaneTurnCacheState(state: HookListenerState, paneKey: string): void {
   state.lastPromptByPaneKey.delete(paneKey)
   state.lastToolByPaneKey.delete(paneKey)
-  state.antigravityCompletedTranscriptByPaneKey.delete(paneKey)
   state.antigravityChildWorkByPaneKey.delete(paneKey)
   state.jcodeTurnPromptByPaneKey.delete(paneKey)
   state.ampCompletedCacheKeys.delete(paneKey)
@@ -317,7 +319,6 @@ export function clearAllListenerCaches(state: HookListenerState): void {
   state.lastPromptByPaneKey.clear()
   state.lastToolByPaneKey.clear()
   clearLegacyAgentStatuses(state)
-  state.antigravityCompletedTranscriptByPaneKey.clear()
   state.antigravityChildWorkByPaneKey.clear()
   state.jcodeTurnPromptByPaneKey.clear()
   state.jcodeHelperPermissionWaitByPaneKey.clear()

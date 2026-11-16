@@ -26,9 +26,17 @@ export const pendingAcpResolution = {
   resolvedAt: null
 } as const
 
+export type AcpAdvertisedEfforts = {
+  efforts: AgentSessionOptionChoice[]
+  defaultEffort?: string
+  declaredDefaultEffort?: string | null
+}
+
 export type AcpRequestPresentation = {
   body: ProviderTimelineRequestBody
   reply(response: AgentSessionPromptResponse | null): unknown
+  /** A URL request the agent may later report finished with `elicitation/complete`. */
+  elicitationId?: string
 }
 
 export type AcpRequestSettlement = { reply: unknown; plan?: string }
@@ -58,12 +66,6 @@ export type AcpSubagentUpdate = {
   restart?: true
   /** The subagent that spawned this one; absent for the main agent's. */
   ownerId?: string
-}
-
-export type AcpModelEffortMenu = {
-  efforts: AgentSessionOptionChoice[]
-  defaultEffort?: string
-  declaredDefaultEffort?: string | null
 }
 
 /** A subagent's own report, relayed on its root session; it never opens or ends the root's turns. */
@@ -161,18 +163,19 @@ export type AcpDialect = {
     params: unknown
   ): { sessionId: string; promptId: string; stopReason: string } | undefined
   contextWindow?(models: unknown): number | undefined
-  modelEfforts?(input: {
-    modelId: string
-    modelInfo?: ModelInfo
-    availableModels?: readonly ModelInfo[]
-    hasModelConfigOption: boolean
-  }): AcpModelEffortMenu | undefined
+  modelEfforts?(model: ModelInfo): AcpAdvertisedEfforts
+  /** Efforts of a listed model family that `models` advertises only as per-effort variants. */
+  familyEfforts?(family: string, models: readonly ModelInfo[]): AcpAdvertisedEfforts | undefined
   /** Native thinking choices remain valid across models; the agent clamps unsupported levels. */
   clampsUnlistedEffort?: true
   /** Opt-in because advertising forms changes agent behaviour; requests use the generic handlers. */
   clientCapabilities?: Pick<ClientCapabilities, 'elicitation' | '_meta'>
+  /** Requests that name no session; they belong to the chat's own. */
+  sessionlessRequests?: readonly string[]
   /** Claimed permission requests are never auto-approved. */
   request?(method: string, params: unknown): AcpRequestPresentation | undefined
+  /** The agent's own notification that a URL request it raised finished, carrying `elicitationId`. */
+  elicitationComplete?(method: string): boolean
   settleRequest?(method: string, params: unknown): AcpRequestSettlement | undefined
   promptErrorDetail?(error: AcpAgentError): string | undefined
   promptFailure?(
@@ -182,6 +185,8 @@ export type AcpDialect = {
   authenticationRequired?(error: AcpAgentError): boolean
   /** The agent dropped this session; only a new child can reopen it. */
   sessionLost?(error: AcpAgentError, sessionId: string): boolean
+  /** The agent refused to reopen this session from `cwd` because it keeps it in another folder. */
+  sessionInOtherFolder?(error: AcpAgentError, sessionId: string, cwd: string): boolean
   hookBlock?(meta: unknown): AcpHookBlock | undefined
   failedTurnText?(stopReason: string): string
   compactionReply?(text: string): AcpCompactionReply | undefined
@@ -204,6 +209,8 @@ export type AcpDialect = {
   signInAccount?: AgentSessionAccountKind
   /** Which session rows are the agent's own built-ins, as this process's initialize response proves. */
   builtinCommands?(initialized: InitializeResponse): (command: AvailableCommand) => boolean
+  /** This agent's fast parameter, mapped to Orca's fast mode toggle. */
+  fastConfigId?: string
 }
 
 export type AcpChildStops = { subagents: boolean; backgroundTasks: boolean }
