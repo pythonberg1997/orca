@@ -29,10 +29,8 @@ import { assertAntigravityChatAuthPublished } from './antigravity-chat-auth-publ
 import { antigravityUserHome } from './antigravity-chat-user-skills'
 import { readAntigravitySignInLine } from './antigravity-sign-in-url'
 import { antigravityChatRulesMeta } from './antigravity-chat-rules'
-import {
-  ANTIGRAVITY_MODEL_LISTING_ARGS,
-  parseAntigravityModelListing
-} from './antigravity-model-catalog'
+import { discardAntigravityListingSession } from './antigravity-listing-session'
+import { parseAgyModelListing } from './antigravity-model-listing'
 import {
   AGY_SKIP_PERMISSIONS_FLAG,
   ANTIGRAVITY_HOST_ACP_MINIMUM_VERSION,
@@ -85,17 +83,20 @@ const ANTIGRAVITY_MANAGED_LAUNCH_SPEC = {
   permissionModeConfig: {
     values: { ask: 'default', 'accept-edits': 'auto_edit', 'full-access': 'yolo' }
   },
+  // Its server lists models only in a session, which it keeps, so Orca removes it.
   modelDiscovery: {
-    kind: 'unavailable',
-    reason: 'the Antigravity server lists its models only in a signed-in session'
+    kind: 'session',
+    listingNamesConfiguredModel: false,
+    inPrivateFolder: true,
+    // The server unpacks about 1 GB per start (29s cold here), so only a picker asking starts it.
+    listsOnDemand: true,
+    discardSession: discardAntigravityListingSession
   },
   transcriptImport: null,
   sessionHistory: ANTIGRAVITY_SESSION_HISTORY,
   privateTempDirectory: true,
-  // The Windows 1.4.5 server otherwise writes its workflow tool into every chat workspace.
-  ...(process.platform === 'win32'
-    ? { sessionMeta: { antigravity: { disabledTools: ['run_workflow'] } } }
-    : {}),
+  // The server otherwise writes its workflow tool into every chat workspace.
+  sessionMeta: { antigravity: { disabledTools: ['run_workflow'] } },
   // `session/load` replays the whole conversation, which the chat already holds.
   resumePreference: 'resume',
   resolveSessionMeta: antigravityChatRulesMeta,
@@ -126,6 +127,13 @@ const ANTIGRAVITY_HOST_LAUNCH_SPEC: AcpLaunchSpec = {
   authMethodUnavailableMessage: undefined,
   signIn: undefined,
   dialect: { ...ANTIGRAVITY_ACP_DIALECT, signInAccount: 'system' },
+  // `agy models` lists without opening a session.
+  modelDiscovery: {
+    kind: 'command',
+    args: ['models'],
+    parse: parseAgyModelListing,
+    listingNamesConfiguredModel: false
+  },
   account: {
     pin: antigravityChatAccount.pin,
     resolve: async ({ launchEnv }) => antigravityHostAccountHome(antigravityUserHome(launchEnv)),
@@ -143,12 +151,6 @@ const ANTIGRAVITY_HOST_LAUNCH_SPEC: AcpLaunchSpec = {
   managedRuntime: undefined,
   resolveSessionMeta: undefined,
   observeSession: (input) => observeAntigravityAcpBrainSession({ ...input, managed: false }),
-  modelDiscovery: {
-    kind: 'command',
-    args: ANTIGRAVITY_MODEL_LISTING_ARGS,
-    parse: parseAntigravityModelListing,
-    listingNamesConfiguredModel: false
-  },
   // agy has no full-access mode, so its launch flag grants it; plan approvals still reach the chat.
   permissionModeConfig: {
     values: { ask: 'default', 'accept-edits': 'accept-edits', 'full-access': 'default' },
@@ -189,6 +191,7 @@ export const ANTIGRAVITY_LAUNCH_SPEC = {
       (await hasAgyCredential(homePath)) &&
       (await antigravityHostAcpReady(command, env, envToDelete))
         ? antigravityHostAccountHome(homePath)
-        : null
+        : null,
+    selectionRevision: () => antigravityChatSignIn.get().revision
   }
 } satisfies AcpLaunchSpec

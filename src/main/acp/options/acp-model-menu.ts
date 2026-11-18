@@ -26,18 +26,15 @@ export function acpModelMenuModels(input: {
   return acpListedModels(modelOption, state).map((model) => {
     const info = state?.availableModels.find((entry) => entry.modelId === model.id)
     const family =
-      (!info || (modelOption !== null && !dialect.modelEfforts)) && state?.availableModels
-        ? dialect.familyEfforts?.(model.id, state.availableModels)
-        : undefined
+      !info && state ? dialect.familyEfforts?.(model.id, state.availableModels) : undefined
     // The running model's live menu outranks variants advertised for its family.
     const advertised = info
-      ? (dialect.modelEfforts?.(info) ?? (model.id === currentModel ? undefined : family))
+      ? dialect.modelEfforts?.(info)
       : model.id === currentModel
         ? undefined
         : family
     const runningDefault =
       model.id === currentModel &&
-      !advertised &&
       family?.defaultEffort &&
       sessionEfforts.some((choice) => choice.value === family.defaultEffort)
         ? family.defaultEffort
@@ -49,9 +46,7 @@ export function acpModelMenuModels(input: {
             efforts: sessionEfforts,
             ...(runningDefault
               ? { defaultEffort: runningDefault, declaredDefaultEffort: runningDefault }
-              : !effortOption && family?.declaredDefaultEffort === null
-                ? { declaredDefaultEffort: null }
-                : {})
+              : {})
           }
         : (modelOption || effortOption) && !advertised
           ? { efforts: [], effortsKnown: false as const }

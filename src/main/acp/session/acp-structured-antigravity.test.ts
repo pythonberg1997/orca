@@ -6,7 +6,6 @@ import fixture from '../fixtures/antigravity-v1.4.1-options.json'
 import { z } from 'zod'
 import { antigravityHostAccountHome } from '../../antigravity/antigravity-host-acp'
 import { linkAntigravityUserSkills } from '../../antigravity/antigravity-chat-user-skills'
-import { AgentModelCatalogListingStoppedError } from '../../native-chat/agent-model-catalog/agent-model-catalog-failures'
 import {
   closeProviderTimelineRigs,
   SESSION
@@ -191,7 +190,7 @@ it('derives per-model thinking efforts from availableModels and CLI model listin
         { value: 'low', label: 'Low' },
         { value: 'medium', label: 'Medium' },
         { value: 'high', label: 'High' },
-        { value: 'xhigh', label: 'Extra' }
+        { value: 'xhigh', label: 'XHigh' }
       ]
     },
     {
@@ -300,7 +299,7 @@ it('derives per-model thinking efforts from availableModels and CLI model listin
         { value: 'low', label: 'Low' },
         { value: 'medium', label: 'Medium' },
         { value: 'high', label: 'High' },
-        { value: 'xhigh', label: 'Extra' }
+        { value: 'xhigh', label: 'XHigh' }
       ]
     }),
     expect.objectContaining({
@@ -338,12 +337,12 @@ it('derives per-model thinking efforts from availableModels and CLI model listin
       { value: 'low', label: 'Low' },
       { value: 'medium', label: 'Medium' },
       { value: 'high', label: 'High' },
-      { value: 'xhigh', label: 'Extra' }
+      { value: 'xhigh', label: 'XHigh' }
     ]
   })
 })
 
-it('probes host agy models while stopping managed probes cleanly and linking plugin skills into chat homes', async () => {
+it('probes host agy models via CLI and links plugin skills into managed chat homes', async () => {
   const root = await mkdtemp(join(tmpdir(), 'orca-agy-probe-'))
   onTestFinished(() => rm(root, { recursive: true, force: true }))
   const userHome = join(root, 'home')
@@ -368,10 +367,6 @@ it('probes host agy models while stopping managed probes cleanly and linking plu
       return 'gemini-3.1-pro-high\tGemini 3.1 Pro (High)\ngemini-3.1-pro-low\tGemini 3.1 Pro (Low)\n'
     }
   })
-  await expect(probe({ variable: 'GEMINI_HOME', path: managedHome })).rejects.toBeInstanceOf(
-    AgentModelCatalogListingStoppedError
-  )
-  expect(seenArgs).toEqual([])
 
   const listed = await probe(antigravityHostAccountHome(userHome))
   expect(seenArgs).toEqual([['models']])

@@ -28,8 +28,9 @@ import {
   acpModelListingForRelease
 } from './acp-model-discovery-policy'
 import type { AcpLaunchSpec } from '../launch/acp-launch-contract'
-import { acpLaunchSpecForAccount } from '../launch/acp-launch-command'
 import { checkAcpLaunchVersion } from '../launch/acp-launch-version'
+import { acpLaunchSpecForAccount } from '../launch/acp-launch-command'
+import { agentSessionAccountHomePath } from '../../../shared/agent-session/lifecycle/accounts/agent-session-account-home'
 import {
   resolveAcpLaunchInvocation,
   type AcpLaunchInvocationDeps
@@ -63,10 +64,11 @@ export function createAcpModelCatalogProbe(
     operation?: StructuredAgentResolutionOperation
   ) => {
     assertStructuredAgentResolutionCurrent(operation)
+    // A host install can list differently from Orca's managed one, so the account picks the spec.
     const spec = acpLaunchSpecForAccount(agentSpec, accountHome)
     const discovery = spec.modelDiscovery
     if (discovery.kind === 'unavailable') {
-      throw new AgentModelCatalogListingStoppedError(discovery.reason)
+      throw new Error(discovery.reason)
     }
     // Reject folderless session discovery before spawning even a version probe.
     if (!workspace && acpListingNeedsChatFolder(discovery)) {
@@ -152,15 +154,18 @@ export function createAcpModelCatalogProbe(
           )
           models = listing.parse(stdout)
         } else if (listing.kind === 'session') {
-          if (!workspace) {
+          if (!workspace && !listing.inPrivateFolder) {
             throw folderlessListing(spec)
           }
           // Remove disposable session storage after the process closes.
           const folderArgs = listing.sessionFolderArgs
           const listInSession = async (model: string | undefined) => {
-            const folder = folderArgs
-              ? await acpRunFolder(join(deps.dataDirectory, 'acp-listing-sessions', spec.agent))
-              : null
+            const folder =
+              folderArgs || listing.inPrivateFolder
+                ? await acpRunFolder(join(deps.dataDirectory, 'acp-listing-sessions', spec.agent))
+                : null
+            const sessionCwd = listing.inPrivateFolder && folder ? folder.path : workspace
+            const started: string[] = []
             try {
               assertStructuredAgentResolutionCurrent(operation)
               const args = [
@@ -178,7 +183,7 @@ export function createAcpModelCatalogProbe(
                     spec,
                     listing,
                     connection,
-                    workspace,
+                    sessionCwd,
                     operation,
                     options?.selectedModels,
                     model,
@@ -203,11 +208,26 @@ export function createAcpModelCatalogProbe(
                             ),
                           demanded: publish.demanded
                         }
-                      : undefined
+                      : undefined,
+                    (sessionId) => started.push(sessionId)
                   ),
                 run
               )
             } finally {
+              // The session's process has exited, so its files are no longer written.
+              const accountHomePath = agentSessionAccountHomePath(accountHome)
+              if (accountHomePath) {
+                for (const sessionId of started) {
+                  await listing
+                    .discardSession?.({ sessionId, cwd: sessionCwd, accountHomePath })
+                    .catch((error: unknown) => {
+                      console.warn(
+                        `[acp-model-catalog] ${spec.agent} kept a listing session:`,
+                        error
+                      )
+                    })
+                }
+              }
               await folder?.remove()
             }
           }
