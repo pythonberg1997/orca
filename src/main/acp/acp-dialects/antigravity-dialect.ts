@@ -1,7 +1,11 @@
 import { z } from 'zod'
-import { legacyAgentSessionQuestionAnswers } from '../../../shared/agent-session/agent-session-question-answer'
+import { legacyAgentSessionQuestionAnswers } from '../../../shared/agent-session/requests/prompts/agent-session-question-answer'
 import { AcpRpcError, acpErrorDataWords, type AcpAgentError } from '../transport/acp-errors'
 import { readAcpPermissionRequest } from '../protocol/acp-permission-requests'
+import {
+  ACP_FORM_ELICITATION_METHOD,
+  acpFormElicitationPresentation
+} from '../requests/acp-form-elicitation'
 import { acpPermissionPresentation } from '../requests/acp-timeline-requests'
 import type { ToolCallUpdate } from '../generated/acp-protocol.generated'
 import {
@@ -13,7 +17,21 @@ import {
 import { antigravityNotification, antigravityToolSubagents } from './antigravity-subagents'
 import { antigravityFamilyEfforts } from '../../antigravity/antigravity-model-catalog'
 
-// interaction_ permissions are questions, even in yolo mode; never auto-approve them.
+// The server's question forms open with only a count; each field's title is the real question.
+const QUESTION_FORM_MESSAGE = /^The agent has (?:a question|\d+ questions)\.$/
+const formMessageSchema = z.looseObject({ mode: z.literal('form'), message: z.string() })
+
+function questionForm(method: string, params: unknown): AcpRequestPresentation | undefined {
+  if (method !== ACP_FORM_ELICITATION_METHOD) {
+    return undefined
+  }
+  const form = formMessageSchema.safeParse(params).data
+  return form && QUESTION_FORM_MESSAGE.test(form.message)
+    ? acpFormElicitationPresentation({ ...form, message: '' })
+    : undefined
+}
+
+// Formless servers ask via interaction_ permissions; never auto-approve them, even in yolo mode.
 function questionRequest(method: string, params: unknown): AcpRequestPresentation | undefined {
   const request =
     method === 'session/request_permission' ? readAcpPermissionRequest(params, () => {}) : null
@@ -147,9 +165,12 @@ function compactionReply(text: string): AcpCompactionReply | undefined {
 }
 
 export const ANTIGRAVITY_ACP_DIALECT: AcpDialect = {
-  // agy 1.5+ asks clarifying questions through form elicitation; 1.3 used interaction_ permissions.
+  // With forms, ask_question carries a write-in field per question; permissions cannot carry text.
   clientCapabilities: { elicitation: { form: {} } },
-  request: (method, params) => questionRequest(method, params) ?? warnedApproval(method, params),
+  request: (method, params) =>
+    questionForm(method, params) ??
+    questionRequest(method, params) ??
+    warnedApproval(method, params),
   normalizeToolUpdate,
   familyEfforts: antigravityFamilyEfforts,
   toolSubagents: antigravityToolSubagents,

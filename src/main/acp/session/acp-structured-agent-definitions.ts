@@ -1,4 +1,4 @@
-import type { AgentSessionCapabilities } from '../../../shared/agent-session/agent-session-capabilities'
+import type { AgentSessionCapabilities } from '../../../shared/agent-session/capabilities/agent-session-capabilities'
 import type { StructuredAgentDefinition } from '../../native-chat/agent-session-wire/providers/structured-agent-definition'
 import { acpLaunchSpecForAccount } from '../launch/acp-launch-command'
 import type { AcpLaunchSpec } from '../launch/acp-launch-contract'

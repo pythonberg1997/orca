@@ -1,8 +1,6 @@
 import { ANTIGRAVITY_BASE_EFFORT_CHOICES } from '../../shared/agent-session/options/catalog-providers/agent-session-option-catalog-antigravity'
-import type {
-  AgentSessionModelOption,
-  AgentSessionOptionChoice
-} from '../../shared/agent-session/agent-session-wire'
+import type { AgentSessionOptionChoice } from '../../shared/agent-session/agent-session-wire'
+import type { AgentSessionModelOption } from '../../shared/agent-session/options/model-catalog/agent-session-model-option'
 import type { AcpAdvertisedEfforts } from '../acp/acp-dialects/acp-dialect'
 import type { ModelInfo } from '../acp/generated/acp-protocol.generated'
 

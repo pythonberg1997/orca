@@ -6,7 +6,7 @@ import {
   buildPosixHookSpoolLines,
   buildWindowsHookEnvironmentGuardLines
 } from '../agent-hooks/installation/scripts/hook-stdin-contract'
-import { ANTIGRAVITY_PRE_TOOL_USE_DECISION, ANTIGRAVITY_STOP_DECISION } from './hook-events'
+import { ANTIGRAVITY_PRE_TOOL_USE_DECISION } from './hook-events'
 
 export function getManagedScript(
   target: 'local' | 'posix' = 'local',
@@ -18,7 +18,7 @@ export function getManagedScript(
       // Delayed expansion corrupts literal ! characters in paths and hook coordinates.
       'setlocal DisableDelayedExpansion',
       'if /I "%ORCA_ANTIGRAVITY_EVENT%"=="Stop" (',
-      `  echo ${ANTIGRAVITY_STOP_DECISION}`,
+      '  echo {"decision":""}',
       ') else if /I "%ORCA_ANTIGRAVITY_EVENT%"=="PreToolUse" (',
       `  echo ${ANTIGRAVITY_PRE_TOOL_USE_DECISION}`,
       ') else (',
@@ -38,7 +38,7 @@ export function getManagedScript(
     '#!/bin/sh',
     'case "$ORCA_ANTIGRAVITY_EVENT" in',
     '  Stop)',
-    `    printf '${ANTIGRAVITY_STOP_DECISION}\\n'`,
+    '    printf \'{"decision":""}\\n\'',
     '    ;;',
     '  PreToolUse)',
     `    printf '${ANTIGRAVITY_PRE_TOOL_USE_DECISION}\\n'`,
@@ -47,10 +47,6 @@ export function getManagedScript(
     '    printf "{}\\n"',
     '    ;;',
     'esac',
-    // agy may leave stdin open; exit before spawning Python when outside an Orca pane.
-    'if [ -z "${ORCA_PANE_KEY:-}" ]; then',
-    '  exit 0',
-    'fi',
     // Events without stdin still need a status post.
     ...buildPosixHookPayloadCapture('empty-object', POSIX_HOOK_JSON_STDIN),
     ...buildHookProcessCapture(),
@@ -94,7 +90,7 @@ export function getWindowsWrapperScript(eventName: string): string {
     '  exit /b 0',
     ')',
     'if /I "%ORCA_ANTIGRAVITY_EVENT%"=="Stop" (',
-    `  echo ${ANTIGRAVITY_STOP_DECISION}`,
+    '  echo {"decision":""}',
     ') else if /I "%ORCA_ANTIGRAVITY_EVENT%"=="PreToolUse" (',
     `  echo ${ANTIGRAVITY_PRE_TOOL_USE_DECISION}`,
     ') else (',
