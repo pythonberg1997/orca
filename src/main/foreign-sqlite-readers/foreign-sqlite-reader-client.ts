@@ -29,14 +29,16 @@ const READ_TIMEOUT_MS: Record<ForeignSqliteReaderKind, number> = {
   // Allow margin beyond observed 4–6s WAL-index rebuilds.
   cursorProfile: 10_000,
   openCodeBinderSessions: 60_000,
-  openCodePromptFailure: 2_000
+  openCodePromptFailure: 2_000,
+  antigravitySummaries: 10_000
 }
 // Keep workers alive across poll intervals to avoid spawning on every round.
 const DEFAULT_IDLE_TEARDOWN_MS: Record<ForeignSqliteReaderKind, number> = {
   cursorProfile: 30_000,
   // The binder polls once per minute.
   openCodeBinderSessions: 120_000,
-  openCodePromptFailure: 30_000
+  openCodePromptFailure: 30_000,
+  antigravitySummaries: 30_000
 }
 const MAX_CONSECUTIVE_DEATHS = 2
 const MAX_QUEUED_READS = 8

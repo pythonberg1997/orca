@@ -5,7 +5,10 @@ import type { AcpLaunchSpec } from '../acp/launch/acp-launch-contract'
 import { ORCA_ACP_CLIENT_INFO } from '../acp/launch/acp-client-info'
 import type { Implementation } from '../acp/generated/acp-protocol.generated'
 import { ANTIGRAVITY_ACP_DIALECT } from '../acp/acp-dialects/antigravity-dialect'
-import type { StructuredAgentSessionHistory } from '../native-chat/conversation-adoption/structured-agent-cli-conversations'
+import {
+  resumeInvocationFromOptions,
+  type StructuredAgentSessionHistory
+} from '../native-chat/conversation-adoption/structured-agent-cli-conversations'
 import {
   AntigravityChatAuthConfigSchema,
   resolveAntigravityChatAuthConfig
@@ -31,6 +34,7 @@ import { readAntigravitySignInLine } from './antigravity-sign-in-url'
 import { antigravityChatRulesMeta } from './antigravity-chat-rules'
 import { discardAntigravityListingSession } from './antigravity-listing-session'
 import { parseAgyModelListing } from './antigravity-model-listing'
+import { ANTIGRAVITY_TRANSCRIPT_IMPORT } from './antigravity-transcript-import'
 import {
   AGY_SKIP_PERMISSIONS_FLAG,
   ANTIGRAVITY_HOST_ACP_MINIMUM_VERSION,
@@ -42,11 +46,15 @@ import {
   isAntigravityHostAccountHome
 } from './antigravity-host-acp'
 
-// Chats cannot adopt agy's terminal conversations.
+// Host `agy` shares `<home>/.gemini/antigravity-cli` across CLI (`--conversation` / `-c`) and ACP.
 const ANTIGRAVITY_SESSION_HISTORY: StructuredAgentSessionHistory = {
   rowAgents: ['antigravity'],
   rowSessionId: (link) => link.handle.nativeId,
-  parseResumeArgs: () => null
+  parseResumeArgs: (args) =>
+    resumeInvocationFromOptions(args, {
+      targetless: ['-c', '--continue'],
+      markers: ['--conversation']
+    })
 }
 
 // Servers before 1.5.1 offer non-Gemini models only to allowlisted editors such as Zed.
@@ -92,7 +100,7 @@ const ANTIGRAVITY_MANAGED_LAUNCH_SPEC = {
     listsOnDemand: true,
     discardSession: discardAntigravityListingSession
   },
-  transcriptImport: null,
+  transcriptImport: ANTIGRAVITY_TRANSCRIPT_IMPORT,
   sessionHistory: ANTIGRAVITY_SESSION_HISTORY,
   privateTempDirectory: true,
   // The server otherwise writes its workflow tool into every chat workspace.

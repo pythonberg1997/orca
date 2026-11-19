@@ -2,6 +2,7 @@ import type {
   ForeignSqliteReaderRequest,
   ForeignSqliteReaderResponse
 } from './foreign-sqlite-reader-protocol'
+import { readAntigravityConversationSummaries } from '../ai-vault/scanners/antigravity/antigravity-summaries-sqlite'
 import { readCursorProfile } from './readers/cursor-profile'
 import { readOpenCodeBinderSessions } from './readers/opencode-binder-sessions'
 import { readOpenCodePromptFailure } from './readers/opencode-prompt-failure'
@@ -20,6 +21,8 @@ export function handleForeignSqliteReaderRequest(
         return { id, ok: true, value: readOpenCodeBinderSessions(request.dbPath, request.cursor) }
       case 'openCodePromptFailure':
         return { id, ok: true, value: readOpenCodePromptFailure(request) }
+      case 'antigravitySummaries':
+        return { id, ok: true, value: readAntigravityConversationSummaries(request.dbPath) }
     }
     return unknownKind(id, kind)
   } catch (err) {

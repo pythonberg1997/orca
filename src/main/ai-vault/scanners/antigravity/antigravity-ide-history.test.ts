@@ -181,6 +181,53 @@ describe('Antigravity IDE history discovery', () => {
     },
     5000
   )
+
+  it('decodes WorkspaceURIs across POSIX and Windows URIs and excludes internal subagent sessions', async () => {
+    const home = await temporaryHome()
+    const brain = join(home, '.gemini', 'antigravity-cli', 'brain')
+    const posixId = '11111111-1111-4111-8111-111111111111'
+    const winId = '22222222-2222-4222-8222-222222222222'
+    const subagentId = '33333333-3333-4333-8333-333333333333'
+    const summaryInternalId = '44444444-4444-4444-8444-444444444444'
+    await writeAntigravityTranscript(brain, posixId, records('POSIX workspace'))
+    await writeAntigravityTranscript(brain, winId, records('Windows workspace'))
+    await writeAntigravityTranscript(brain, subagentId, records('Subagent transcript'))
+    await writeAntigravityTranscript(
+      brain,
+      summaryInternalId,
+      records('Summary internal transcript')
+    )
+    const cache = join(dirname(brain), 'cache')
+    await mkdir(cache, { recursive: true })
+    await writeFile(
+      join(cache, 'conversation_metadata.json'),
+      JSON.stringify({
+        conversations: {
+          [posixId]: { summary: { WorkspaceURIs: ['file:///Users/ada/My%20Projects/orca/'] } },
+          [winId]: { summary: { WorkspaceURIs: ['file:///C:/Users/ada/repo/'] } },
+          [subagentId]: { is_internal: true },
+          [summaryInternalId]: {
+            summary: { Internal: true, WorkspaceURIs: ['file:///Users/ada/repo'] }
+          }
+        }
+      })
+    )
+
+    const result = await scanAiVaultSessions({
+      ...isolatedScanRoots(home),
+      antigravityBrainDir: brain,
+      antigravityAppHome: home
+    })
+
+    expect(
+      result.sessions
+        .toSorted((a, b) => a.sessionId.localeCompare(b.sessionId))
+        .map((session) => [session.sessionId, session.cwd])
+    ).toEqual([
+      [posixId, '/Users/ada/My Projects/orca'],
+      [winId, 'C:\\Users\\ada\\repo']
+    ])
+  })
 })
 
 function jsonLines(records: unknown[]): string {

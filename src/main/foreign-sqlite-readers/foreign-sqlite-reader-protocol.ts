@@ -21,10 +21,17 @@ type OpenCodePromptFailureRequest = OpenCodePromptFailureQuery & {
   kind: 'openCodePromptFailure'
 }
 
+type AntigravitySummariesRequest = {
+  id: number
+  kind: 'antigravitySummaries'
+  dbPath: string
+}
+
 export type ForeignSqliteReaderRequest =
   | CursorProfileRequest
   | OpenCodeBinderSessionsRequest
   | OpenCodePromptFailureRequest
+  | AntigravitySummariesRequest
 
 export type ForeignSqliteReaderKind = ForeignSqliteReaderRequest['kind']
 

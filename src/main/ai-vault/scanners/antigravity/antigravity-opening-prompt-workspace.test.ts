@@ -72,7 +72,7 @@ describe('Antigravity opening prompt workspace association', () => {
       expect(session.createdAt).not.toBe(openingTime)
       expect(
         (await resolver([historyRow(prompt, '/repo/original', id)]).enrich(session, historyPath))
-          .cwd
+          ?.cwd
       ).toBe('/repo/original')
     }
   )
@@ -90,7 +90,7 @@ describe('Antigravity opening prompt workspace association', () => {
       throw new Error('Missing cloned session')
     }
     expect(session.previewMessagesTruncated).toBe(true)
-    expect((await resolver([historyRow(prompt)]).enrich(session, historyPath)).cwd).toBe(
+    expect((await resolver([historyRow(prompt)]).enrich(session, historyPath))?.cwd).toBe(
       '/repo/original'
     )
     expect((await state.finalize('linux'))?.previewMessages).toHaveLength(1)

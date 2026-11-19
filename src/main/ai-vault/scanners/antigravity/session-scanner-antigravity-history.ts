@@ -1,8 +1,11 @@
 import {
   ANTIGRAVITY_INDEX_MAX_BYTES,
   antigravityCachePath,
+  antigravityMetadataInternalConversations,
   antigravityMetadataWorkspaces,
-  readBoundedAntigravityIndex
+  antigravitySummariesDbPath,
+  readBoundedAntigravityIndex,
+  type AntigravityConversationSummaries
 } from './session-scanner-antigravity-metadata'
 import type { AiVaultSession } from '../../../../shared/ai-vault/contracts/ai-vault-types'
 import {
@@ -70,23 +73,29 @@ type AntigravityHistoryEntry = {
 type AntigravityHistoryIndex = {
   byPrompt: Map<string, AntigravityHistoryEntry[]>
   byId: Map<string, string | null>
+  internalIds: Set<string>
 }
 
 export type AntigravityWorkspaceResolver = {
-  enrich(session: AiVaultSession, historyPath: string): Promise<AiVaultSession>
+  enrich(session: AiVaultSession, historyPath: string): Promise<AiVaultSession | null>
 }
 
 export function createAntigravityWorkspaceResolver(
-  readHistory: (historyPath: string) => Promise<string | null>
+  readHistory: (historyPath: string) => Promise<string | null>,
+  readSummaries: (dbPath: string) => Promise<AntigravityConversationSummaries | null> = async () =>
+    null
 ): AntigravityWorkspaceResolver {
   const indexes = new Map<string, Promise<AntigravityHistoryIndex>>()
 
   return {
     async enrich(session, historyPath) {
-      if (session.agent !== 'antigravity' || session.cwd) {
+      if (session.agent !== 'antigravity') {
         return session
       }
       if (antigravitySessionOrigin(session.filePath) === 'antigravity-acp') {
+        if (session.cwd) {
+          return session
+        }
         // The ACP server records each session's cwd beside it and keeps no history.jsonl.
         const metadata = parseJsonObject(
           (await readHistory(antigravityAcpSessionMetadataPath(historyPath, session.sessionId))) ??
@@ -98,25 +107,29 @@ export function createAntigravityWorkspaceResolver(
       let index = indexes.get(historyPath)
       if (!index) {
         // Evict rejected reads so a transient WSL failure does not poison later enrichment.
-        const pending: Promise<AntigravityHistoryIndex> = readHistory(historyPath)
-          .then(async (history) => {
+        const pending: Promise<AntigravityHistoryIndex> = Promise.all([
+          readHistory(historyPath),
+          readHistory(antigravityCachePath(historyPath, 'conversation_metadata.json')),
+          readHistory(antigravityCachePath(historyPath, 'projects.json')),
+          readHistory(antigravityCachePath(historyPath, 'last_conversations.json')),
+          readSummaries(antigravitySummariesDbPath(historyPath))
+        ])
+          .then(([history, metadata, projects, lastConversations, summaries]) => {
             const index = indexAntigravityHistory(history)
-            const [metadata, projects, lastConversations] = await Promise.all(
-              ['conversation_metadata.json', 'projects.json', 'last_conversations.json'].map(
-                (name) => readHistory(antigravityCachePath(historyPath, name))
-              )
-            )
+            index.internalIds = new Set([
+              ...antigravityMetadataInternalConversations(metadata ?? null),
+              ...(summaries?.internalIds ?? [])
+            ])
+            for (const [id, path] of Object.entries(summaries?.workspaces ?? {})) {
+              mergeWorkspaceId(index.byId, id, path)
+            }
             const paths = antigravityMetadataWorkspaces({
               metadata: metadata ?? null,
               projects: projects ?? null,
               lastConversations: lastConversations ?? null
             })
             for (const [id, path] of paths) {
-              if (!index.byId.has(id)) {
-                index.byId.set(id, path)
-              } else if (index.byId.get(id) !== path) {
-                index.byId.set(id, null)
-              }
+              mergeWorkspaceId(index.byId, id, path)
             }
             return index
           })
@@ -129,14 +142,33 @@ export function createAntigravityWorkspaceResolver(
         index = pending
         indexes.set(historyPath, pending)
       }
-      const workspace = findAntigravityWorkspace(session, await index)
+      const resolved = await index
+      if (resolved.internalIds.has(session.sessionId)) {
+        return null
+      }
+      if (session.cwd) {
+        return session
+      }
+      const workspace = findAntigravityWorkspace(session, resolved)
       return workspace ? { ...session, cwd: workspace } : session
     }
   }
 }
 
+function mergeWorkspaceId(byId: Map<string, string | null>, id: string, path: string | null): void {
+  if (!byId.has(id)) {
+    byId.set(id, path)
+  } else if (byId.get(id) !== path) {
+    byId.set(id, null)
+  }
+}
+
 function indexAntigravityHistory(content: string | null): AntigravityHistoryIndex {
-  const index: AntigravityHistoryIndex = { byPrompt: new Map(), byId: new Map() }
+  const index: AntigravityHistoryIndex = {
+    byPrompt: new Map(),
+    byId: new Map(),
+    internalIds: new Set()
+  }
   if (content && Buffer.byteLength(content) > ANTIGRAVITY_INDEX_MAX_BYTES) {
     return index
   }
@@ -150,11 +182,7 @@ function indexAntigravityHistory(content: string | null): AntigravityHistoryInde
       continue
     }
     if (id) {
-      if (!index.byId.has(id)) {
-        index.byId.set(id, workspace)
-      } else if (index.byId.get(id) !== workspace) {
-        index.byId.set(id, null)
-      }
+      mergeWorkspaceId(index.byId, id, workspace)
     }
     if (!promptHash) {
       continue
