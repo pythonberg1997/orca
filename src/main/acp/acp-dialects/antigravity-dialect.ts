@@ -15,6 +15,7 @@ import {
   type AcpDialect,
   type AcpRequestPresentation
 } from './acp-dialect'
+import { antigravityToolBackgroundTasks } from './antigravity-background-tasks'
 import { antigravityNotification, antigravityToolSubagents } from './antigravity-subagents'
 
 // The server's question forms open with only a count; each field's title is the real question.
@@ -231,6 +232,7 @@ export const ANTIGRAVITY_ACP_DIALECT: AcpDialect = {
   // Standalone entries in availableModels have fixed or no thinking levels.
   modelEfforts: () => ({ efforts: [], declaredDefaultEffort: null }),
   familyEfforts,
+  toolBackgroundTasks: antigravityToolBackgroundTasks,
   toolSubagents: antigravityToolSubagents,
   notification: antigravityNotification,
   promptErrorDetail,

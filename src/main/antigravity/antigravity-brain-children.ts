@@ -64,17 +64,15 @@ export function createAntigravityBrainChildren(options: {
     hasOpen: (): boolean => openChildren.size > 0,
     clear,
     applySystemMessages: (
-      messages: Extract<AntigravityBrainRecord, { kind: 'system-message' }>['messages'],
-      openParentTasks: Set<string>
+      messages: Extract<AntigravityBrainRecord, { kind: 'system-message' }>['messages']
     ): AcpSubagentUpdate[] => {
       const updates: AcpSubagentUpdate[] = []
       for (const msg of messages) {
         if (msg.stopsAllSubagents) {
-          openParentTasks.clear()
           clear()
           updates.push({ id: '*', allOpen: true, state: 'stopped' })
         } else if (msg.isTask) {
-          openParentTasks.delete(msg.sender)
+          continue
         } else {
           openChildren.delete(msg.sender)
           updates.push({
@@ -134,8 +132,8 @@ export function createAntigravityBrainChildren(options: {
             terminalState = 'stopped'
             break
           }
-          if (record.kind === 'generic' && record.backgroundTaskId) {
-            child.openTasks.add(record.backgroundTaskId)
+          if (record.kind === 'generic' && record.backgroundTask) {
+            child.openTasks.add(record.backgroundTask.taskId)
             child.idleDoneAt = null
           } else if (record.kind === 'system-message') {
             for (const msg of record.messages) {

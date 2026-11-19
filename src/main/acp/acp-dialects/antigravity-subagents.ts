@@ -5,6 +5,7 @@ import { parseAntigravitySubagentToolInput } from '../../../shared/antigravity-s
 import type { ToolCallUpdate } from '../generated/acp-protocol.generated'
 import { acpSubagentPromptLabel } from '../timeline/acp-subagents'
 import type { AcpDialectNotification, AcpSubagentUpdate } from './acp-dialect'
+import { brainBackgroundTaskSchema } from './antigravity-background-tasks'
 
 export const ANTIGRAVITY_BRAIN_NOTIFICATION = '_antigravity/brain_turn'
 
@@ -32,7 +33,8 @@ const brainTurnSchema = z.object({
   turn: nonEmptyId.optional(),
   started: z.boolean().optional(),
   end: z.object({ stopReason: nonEmptyId }).optional(),
-  subagents: z.array(brainSubagentSchema).optional()
+  subagents: z.array(brainSubagentSchema).optional(),
+  backgroundTasks: z.array(brainBackgroundTaskSchema).optional()
 })
 
 export function antigravityNotification(

@@ -1,15 +1,18 @@
 import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { isRecord } from '../../shared/agent-status/child-work/agent-status-child-work-value-guards'
 import { ANTIGRAVITY_ACP_HOME } from '../../shared/agent-session/lifecycle/provider-handles/antigravity-session-origin'
 import { MAX_SESSION_TRANSCRIPT_RECORD_BYTES } from '../ai-vault/transcripts/session-transcript-record-budget'
+import {
+  fileUriToLocalPath,
+  parseAntigravityBackgroundTaskStart,
+  parseAntigravityTaskOutcome,
+  type AntigravityStartedBackgroundTask
+} from './antigravity-brain-background-task-records'
 import { antigravityUserHome } from './antigravity-chat-user-skills'
 
 const SPAWNED_SUBAGENT_MARKER = 'Created the following subagent:'
-const BACKGROUND_TASK_MARKER = 'Tool is running as a background task with task id:'
 const SPAWNED_SUBAGENT_JSON =
   /(?:^|\r?\n)Created the following subagent:\s*\r?\n(\{[\s\S]*?\r?\n\})/
-const BACKGROUND_TASK_ID = /(?:^|\r?\n)Tool is running as a background task with task id:\s*(\S+)/
 const SYSTEM_MESSAGE_ENTRY =
   /\[Message\]\s+(?:timestamp=\S+\s+)?sender=(\S+)\s+priority=(\S+)\s+content=([\s\S]*?)(?=\r?\n\[Message\]\s+(?:timestamp=\S+\s+)?sender=|\r?\n<\/SYSTEM_MESSAGE>|$)/g
 
@@ -29,6 +32,9 @@ type AntigravitySystemMessageItem = {
   isTask: boolean
   stopsAllSubagents: boolean
   wakesAgent: boolean
+  taskState?: 'done' | 'blocked' | 'idle'
+  taskError?: string
+  outputFile?: string
 }
 
 export type AntigravityBrainRecord =
@@ -59,7 +65,7 @@ export type AntigravityBrainRecord =
         conversationId: string
         transcriptPaths?: AntigravityTranscriptPaths
       }
-      backgroundTaskId?: string
+      backgroundTask?: AntigravityStartedBackgroundTask
     }
   | {
       kind: 'system-message'
@@ -103,14 +109,8 @@ export function antigravityBrainTranscriptPaths(
 function resolveTranscriptUriPaths(
   uri: string | undefined
 ): AntigravityTranscriptPaths | undefined {
-  if (!uri?.startsWith('file://')) {
-    return undefined
-  }
-  try {
-    return transcriptPathsForLogsDir(dirname(fileURLToPath(uri)))
-  } catch {
-    return undefined
-  }
+  const path = fileUriToLocalPath(uri)
+  return path ? transcriptPathsForLogsDir(dirname(path)) : undefined
 }
 
 function parseSpawnedSubagent(
@@ -158,13 +158,15 @@ function parseSystemMessages(content: string | undefined): AntigravitySystemMess
     const stopsAllSubagents =
       sender === 'system' &&
       body.includes('All your subagents and background tasks have been stopped')
+    const isTask = sender.includes('/task-')
     messages.push({
       sender,
       content: body,
-      isTask: sender.includes('/task-'),
+      isTask,
       stopsAllSubagents,
       // Low-priority notices are piggybacked onto explicit turns and never wake an idle agent.
-      wakesAgent: !stopsAllSubagents && priority !== 'MESSAGE_PRIORITY_LOW' && priority !== 'low'
+      wakesAgent: !stopsAllSubagents && priority !== 'MESSAGE_PRIORITY_LOW' && priority !== 'low',
+      ...(isTask ? parseAntigravityTaskOutcome(body) : {})
     })
   }
   return messages
@@ -234,16 +236,15 @@ export function parseAntigravityBrainLine(line: string): AntigravityBrainRecord 
   }
   if (source === 'MODEL' && type === 'GENERIC') {
     const spawnedSubagent = parseSpawnedSubagent(content)
-    const backgroundTaskId = content?.includes(BACKGROUND_TASK_MARKER)
-      ? BACKGROUND_TASK_ID.exec(content)?.[1]
-      : undefined
+    const backgroundTask =
+      status === 'RUNNING' ? parseAntigravityBackgroundTaskStart(content) : undefined
     return {
       kind: 'generic',
       stepIndex,
       status,
       content,
       ...(spawnedSubagent ? { spawnedSubagent } : {}),
-      ...(backgroundTaskId ? { backgroundTaskId } : {})
+      ...(backgroundTask ? { backgroundTask } : {})
     }
   }
   if (source === 'SYSTEM' && type === 'SYSTEM_MESSAGE') {
