@@ -9,11 +9,13 @@ import {
   resumeInvocationFromOptions,
   type StructuredAgentSessionHistory
 } from '../native-chat/conversation-adoption/structured-agent-cli-conversations'
+import { ANTIGRAVITY_TRANSCRIPT_IMPORT } from './antigravity-transcript-import'
 import {
   AntigravityChatAuthConfigSchema,
   resolveAntigravityChatAuthConfig
 } from '../../shared/agent-accounts/antigravity/antigravity-chat-auth-config'
 import { agentSessionSetupFor } from '../../shared/agent-session/lifecycle/launch/agent-session-setup-commands'
+import { deliverAntigravityInstructions } from '../acp/launch/acp-instructions'
 import { observeAntigravityAcpBrainSession } from './antigravity-acp-brain-observer'
 import { ANTIGRAVITY_ACP_COMMAND, ANTIGRAVITY_ACP_RUNTIME } from './antigravity-acp-runtime'
 import {
@@ -34,7 +36,6 @@ import { readAntigravitySignInLine } from './antigravity-sign-in-url'
 import { antigravityChatRulesMeta } from './antigravity-chat-rules'
 import { discardAntigravityListingSession } from './antigravity-listing-session'
 import { parseAgyModelListing } from './antigravity-model-listing'
-import { ANTIGRAVITY_TRANSCRIPT_IMPORT } from './antigravity-transcript-import'
 import {
   AGY_SKIP_PERMISSIONS_FLAG,
   ANTIGRAVITY_HOST_ACP_MINIMUM_VERSION,
@@ -46,14 +47,16 @@ import {
   isAntigravityHostAccountHome
 } from './antigravity-host-acp'
 
-// Host `agy` shares `<home>/.gemini/antigravity-cli` across CLI (`--conversation` / `-c`) and ACP.
+// Chats and terminals share agy's conversation store when a chat runs the host's `agy acp`. A bare
+// `-c` is not refused: managed chats live elsewhere, so it would block agy for every Chat user.
 const ANTIGRAVITY_SESSION_HISTORY: StructuredAgentSessionHistory = {
   rowAgents: ['antigravity'],
   rowSessionId: (link) => link.handle.nativeId,
+  // agy parses Go flags, so a single dash and `--flag=value` spell the same option.
   parseResumeArgs: (args) =>
     resumeInvocationFromOptions(args, {
-      targetless: ['-c', '--continue'],
-      markers: ['--conversation']
+      targetless: [],
+      markers: ['--conversation', '-conversation']
     })
 }
 
@@ -100,6 +103,7 @@ const ANTIGRAVITY_MANAGED_LAUNCH_SPEC = {
     listsOnDemand: true,
     discardSession: discardAntigravityListingSession
   },
+  instructions: deliverAntigravityInstructions,
   transcriptImport: ANTIGRAVITY_TRANSCRIPT_IMPORT,
   sessionHistory: ANTIGRAVITY_SESSION_HISTORY,
   privateTempDirectory: true,

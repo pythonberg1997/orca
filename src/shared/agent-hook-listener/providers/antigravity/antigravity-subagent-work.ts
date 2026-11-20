@@ -25,7 +25,9 @@ type AntigravityPendingSpawn = {
 export type AntigravityPaneChildWork = {
   subagentParent?: string
   parentStoppedAt?: number
+  helpersIdleAt?: number
   commands?: Set<string>
+  openSubagents?: Set<string>
   pendingSpawns?: AntigravityPendingSpawn[]
   nextPendingSeq?: number
   subagents?: Map<string, AgentSubagentSnapshot>
@@ -190,16 +192,19 @@ export function trackAntigravityParentSubagentTools(
     return
   }
   if (parsed.kind === 'manage_subagents') {
-    if (!existingWork?.subagents) {
+    if (!existingWork) {
       return
     }
     if (parsed.action === 'kill_all') {
-      existingWork.subagents.clear()
+      existingWork.subagents?.clear()
+      existingWork.openSubagents?.clear()
       delete existingWork.pendingSpawns
       return
     }
     for (const rawId of parsed.conversationIds) {
-      existingWork.subagents.delete(boundedSubagentId(rawId))
+      const id = boundedSubagentId(rawId)
+      existingWork.subagents?.delete(id)
+      existingWork.openSubagents?.delete(id)
     }
     return
   }
@@ -212,11 +217,16 @@ export function trackAntigravityParentSubagentTools(
     }
     return
   }
-  if (parsed.kind === 'swarm_kill' && existingWork?.subagents) {
+  if (parsed.kind === 'swarm_kill' && existingWork) {
     const targetId = boundedSubagentId(parsed.id)
-    for (const key of existingWork.subagents.keys()) {
+    for (const key of existingWork.subagents?.keys() ?? []) {
       if (matchesAntigravitySwarmKillId(key, targetId)) {
-        existingWork.subagents.delete(key)
+        existingWork.subagents?.delete(key)
+      }
+    }
+    for (const key of existingWork.openSubagents ?? []) {
+      if (matchesAntigravitySwarmKillId(key, targetId)) {
+        existingWork.openSubagents?.delete(key)
       }
     }
   }
@@ -235,11 +245,14 @@ export function normalizeAntigravityChildSubagentEvent(
   if (!id) {
     return null
   }
+  const open = (work.openSubagents ??= new Set())
   if (eventName === 'Stop') {
     if (!isAntigravityStopStillBusy(hookPayload)) {
+      open.delete(id)
       work.subagents?.delete(id)
     }
   } else if (isAntigravityStepEvent(eventName)) {
+    open.add(id)
     work.subagents ??= new Map()
     const toolName = readAntigravityToolCall(hookPayload).toolName
     const childState =
@@ -263,6 +276,11 @@ export function normalizeAntigravityChildSubagentEvent(
   } else {
     return null
   }
+  if (open.size === 0 && (work.subagents?.size ?? 0) === 0 && (work.commands?.size ?? 0) === 0) {
+    work.helpersIdleAt = now
+  } else {
+    delete work.helpersIdleAt
+  }
 
   const subagents = activeAntigravitySubagents(work)
   const parentSnapshot =
@@ -278,6 +296,9 @@ export function normalizeAntigravityChildSubagentEvent(
     lastAssistantMessage: parentSnapshot?.lastAssistantMessage,
     lastAssistantMessageIsToolOutput: parentSnapshot?.lastAssistantMessageIsToolOutput,
     ...(subagents ? { subagents } : {}),
+    ...(!subagents && work.parentStoppedAt !== undefined && (work.commands?.size ?? 0) > 0
+      ? { workingMode: 'monitoring' as const }
+      : {}),
     ...(work.parentStoppedAt !== undefined
       ? { mainAgent: { state: 'done', stateStartedAt: work.parentStoppedAt } }
       : {})

@@ -8,8 +8,10 @@ import {
 import { AcpContextTimeline } from './acp-context-usage'
 import { AcpThreadGoalTimeline } from './acp-thread-goal-timeline'
 import { AcpBackgroundTaskTimeline } from './acp-background-task-timeline'
+import { AcpAgentTurns } from './acp-agent-turns'
 import {
   GENERIC_ACP_DIALECT,
+  type AcpBackgroundTaskUpdate,
   type AcpDialect,
   type AcpTurnEnding
 } from '../acp-dialects/acp-dialect'
@@ -45,7 +47,7 @@ export class AcpTimelineTranslator {
   /** Drained by the lane in journal order. */
   readonly subagents = new AcpSubagents()
   readonly children: AcpChildSessions
-  private readonly ownership: AcpTimelineOwnership
+  private readonly ownership = new AcpTimelineOwnership()
   private readonly started = new BoundedMap<string, true>({ maxEntries: 128 })
   readonly elicitations = new AcpUrlElicitations()
   private readonly failures: AcpTurnFailures
@@ -53,9 +55,9 @@ export class AcpTimelineTranslator {
   private readonly context = new AcpContextTimeline()
   private readonly threadGoal = new AcpThreadGoalTimeline()
   protected activeTurn?: string
+  private readonly agentTurns: AcpAgentTurns
 
   constructor(private readonly options: AcpTimelineTranslatorOptions) {
-    this.ownership = new AcpTimelineOwnership()
     this.dialect = options.dialect ?? GENERIC_ACP_DIALECT
     this.providerSessionId = options.sessionId
     this.injectsPromptIdentity = this.dialect.injectedPromptIdentity === true
@@ -64,8 +66,13 @@ export class AcpTimelineTranslator {
       this.ownership.tools.join(callId)
     )
     this.prompts = new AcpPromptTurns(options.sessionId, this.dialect, options.agentName)
-    const tools = this.ownership.tools
-    this.children = new AcpChildSessions(options.sessionId, this.dialect, this.subagents, tools)
+    this.children = new AcpChildSessions(
+      options.sessionId,
+      this.dialect,
+      this.subagents,
+      this.ownership.tools
+    )
+    this.agentTurns = new AcpAgentTurns(this.dialect, this.ownership.tools, this.backgroundTasks)
   }
 
   dispose(): void {
@@ -85,19 +92,38 @@ export class AcpTimelineTranslator {
       throw new Error('ACP prompt overlaps a prompt or load')
     }
     const prompt = this.prompts.open(clientMessageId, at, compactionTurn)
+    this.agentTurns.resume()
     if (this.prompts.current?.opened) {
       this.ownership.operation().open(prompt.promptId)
     }
     return prompt
   }
 
+  /** The lane ends unprompted work on quiet, Stop or a send. */
+  endAgentTurn(at: number, stopReason = 'end_turn'): ProviderTimelineEvent[] {
+    const turn = this.agentTurns.take(this.activeTurn, at, stopReason)
+    return turn ? this.endTurn(turn, { stopReason, at }) : []
+  }
+
+  isSyntheticBackgroundTask = (taskId: string): boolean => this.ownership.tools.backgrounds(taskId)
+
+  confirmBackgroundTask = (taskId: string, settled?: AcpBackgroundTaskUpdate): void =>
+    this.ownership.tools.confirmBackground(taskId, settled)
+
+  agentTurnCalls = (): 'none' | 'running' | null => this.agentTurns.calls(this.activeTurn)
+
   promptResult(
     clientMessageId: string,
-    result: PromptResponse,
-    at: number
+    { stopReason, _meta }: PromptResponse,
+    at: number,
+    cancelRequested = false
   ): ProviderTimelineEvent[] {
-    const hookBlock = this.dialect.hookBlock?.(result._meta)
-    return this.finishPrompt(clientMessageId, { stopReason: result.stopReason, at, hookBlock })
+    return this.finishPrompt(clientMessageId, {
+      stopReason,
+      at,
+      hookBlock: this.dialect.hookBlock?.(_meta),
+      cancelRequested
+    })
   }
 
   /** Only agent-authored failures supply diagnostic text; connection loss is handled separately. */
@@ -122,9 +148,10 @@ export class AcpTimelineTranslator {
     if (prompt?.clientMessageId !== clientMessageId) {
       return []
     }
-    const events = this.start(prompt.turn, ending.at)
-    events.push(...this.endTurn(prompt.turn, { ...ending, durationMs: prompt.durationMs }))
-    return events
+    return [
+      ...this.start(prompt.turn, ending.at),
+      ...this.endTurn(prompt.turn, { ...ending, durationMs: prompt.durationMs })
+    ]
   }
 
   contextModels = (models: unknown, at: number): ProviderTimelineEvent[] =>
@@ -142,26 +169,18 @@ export class AcpTimelineTranslator {
     this.loading = false
   }
 
-  reconcileSubagent(
+  reconcileSubagent = (
     id: string,
     state: NativeChatSubagentState,
     at: number
-  ): ProviderTimelineEvent[] {
-    return this.subagents.reconcile(id, state, this.options.sessionId, at)
-  }
+  ): ProviderTimelineEvent[] => this.subagents.reconcile(id, state, this.options.sessionId, at)
 
   /** Provisionally settle missing tasks; later provider endings may revise the outcome. */
-  reconcileBackgroundTask(taskId: string): ProviderTimelineEvent[] {
-    return this.backgroundTasks.reconcile(taskId, this.options.sessionId)
-  }
+  reconcileBackgroundTask = (taskId: string): ProviderTimelineEvent[] =>
+    this.backgroundTasks.reconcile(taskId, this.options.sessionId)
 
-  sessionEvent(event: AcpSessionEvent, at: number): ProviderTimelineEvent[] {
-    return this.notification(
-      'session/update',
-      event.kind === 'known' ? event.notification : event.raw,
-      at
-    )
-  }
+  sessionEvent = (event: AcpSessionEvent, at: number): ProviderTimelineEvent[] =>
+    this.notification('session/update', event.kind === 'known' ? event.notification : event.raw, at)
 
   notification(method: string, params: unknown, at: number): ProviderTimelineEvent[] {
     if (this.ownership.disposed) {
@@ -196,7 +215,7 @@ export class AcpTimelineTranslator {
       (update !== undefined && ACP_SUBSTANTIVE_UPDATES.includes(update.sessionUpdate)) ||
       extension?.end !== undefined ||
       extension?.started === true
-    const offeredTurn = providerTurn ?? open
+    const offeredTurn = providerTurn ?? open ?? this.agentTurns.mint(opens, at, update)
     const operation = this.ownership.operation()
     const owner = update
       ? this.ownership.messages.owner(offeredTurn, update, operation.settled)
@@ -235,25 +254,12 @@ export class AcpTimelineTranslator {
     if (extension?.disposition === 'map' && extension.failure && standard) {
       return events
     }
-    const end = extension?.end
-    if (end && turn) {
-      // Hook refusal ends immediately; normal completion waits for the prompt reply.
-      if (
-        this.prompts.current?.turn === turn &&
-        ['end_turn', 'cancelled'].includes(end.stopReason) &&
-        !end.hookBlock
-      ) {
-        this.prompts.current.durationMs = end.durationMs
-      } else {
-        events.push(...this.endTurn(turn, { ...end, at }))
-      }
-      return events
+    if (extension?.end && turn) {
+      return this.prompts.awaitsReply(turn, extension.end)
+        ? events
+        : [...events, ...this.endTurn(turn, { ...extension.end, at })]
     }
     if (standard) {
-      const messageKey =
-        turn && this.dialect.injectedPromptIdentity
-          ? this.ownership.messages.key(turn, standard.update)
-          : undefined
       return [
         ...events,
         ...acpSessionUpdate(standard, turn, at, {
@@ -262,7 +268,10 @@ export class AcpTimelineTranslator {
           backgroundTasks: this.backgroundTasks,
           subagents: this.subagents,
           failures: this.failures,
-          messageKey
+          messageKey:
+            turn && this.dialect.injectedPromptIdentity
+              ? this.ownership.messages.key(turn, standard.update)
+              : undefined
         })
       ]
     }
@@ -272,25 +281,21 @@ export class AcpTimelineTranslator {
     return events
   }
 
-  request(
-    method: string,
-    params: unknown,
-    id: string | number
-  ): ReturnType<typeof translateAcpRequest> {
-    return this.elicitations.track(
+  request = (method: string, params: unknown, id: string | number) =>
+    this.elicitations.track(
       translateAcpRequest(method, params, id, {
         sessionId: this.options.sessionId,
         dialect: this.dialect,
         tools: this.ownership.tools
       })
     )
-  }
 
   // Write failure reasons before ending the turn so their rows join it.
   private endTurn(turn: string, ending: AcpTurnEnding): ProviderTimelineEvent[] {
     const events = this.prompts.endCompaction(turn, ending, this.failures) ?? [
+      ...this.agentTurns.background(turn, ending, this.options.sessionId),
       ...this.failures.ended(turn, ending),
-      ...acpTurnEndEvents(this.options.sessionId, turn, ending)
+      ...acpTurnEndEvents(this.options.sessionId, turn, this.failures.ending(turn, ending))
     ]
     this.end(turn)
     if (this.prompts.current?.turn === turn) {
@@ -314,16 +319,12 @@ export class AcpTimelineTranslator {
       this.end(this.activeTurn)
     }
     operation.open(turn)
-    if (turn === this.prompts.current?.turn) {
-      const events = this.prompts.start(turn, at)
-      // Late frames must not reopen or retarget this prompt.
-      this.started.set(turn, true)
-      this.activeTurn = turn
-      return events
-    }
+    // Late frames must not reopen or retarget a prompt.
     this.started.set(turn, true)
     this.activeTurn = turn
-    return [{ type: 'turn.open', turn, at }]
+    return turn === this.prompts.current?.turn
+      ? this.prompts.start(turn, at)
+      : [{ type: 'turn.open', turn, at }]
   }
 
   private end(turn: string): void {

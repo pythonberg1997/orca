@@ -16,7 +16,7 @@ export type AntigravityStartedBackgroundTask = {
   outputFile?: string
 }
 
-export type AntigravityTaskOutcome = {
+type AntigravityTaskOutcome = {
   taskState: 'done' | 'blocked' | 'idle'
   taskError?: string
   outputFile?: string

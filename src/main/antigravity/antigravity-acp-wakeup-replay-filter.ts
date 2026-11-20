@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { BoundedMap } from '../../shared/collections/bounded-map'
 import { isRecord } from '../../shared/agent-status/child-work/agent-status-child-work-value-guards'
 import type { SessionNotification } from '../acp/generated/acp-protocol.generated'
@@ -7,7 +8,6 @@ const LIVE_WAKEUP_UPDATES = new Set<string>([
   'agent_thought_chunk',
   'agent_message_chunk',
   'tool_call',
-  'tool_call_update',
   'plan'
 ])
 
@@ -64,7 +64,6 @@ function consumeOwedPrefix(text: string, pending: string): PrefixConsumption {
 export function createAntigravityWakeupReplayFilter(options: {
   isWakeupOpen: () => boolean
   isIdleWakeupWindow: () => boolean
-  ensureWakeupTurn: () => string
 }) {
   let pendingThoughts = ''
   let owedToolCalls = 0
@@ -156,8 +155,7 @@ export function createAntigravityWakeupReplayFilter(options: {
   return {
     synthesizeWakeupStep(
       step: AntigravityWakeupStep,
-      wakeupTurn: string,
-      allocSeq: () => number
+      wakeupTurn: string
     ): { updates: Record<string, unknown>[]; toolCallIds: string[] } {
       if (liveWakeups) {
         return { updates: [], toolCallIds: [] }
@@ -172,7 +170,7 @@ export function createAntigravityWakeupReplayFilter(options: {
         })
       }
       for (const call of step.toolCalls) {
-        const toolCallId = `agy-wakeup-call:${step.stepIndex ?? wakeupTurn}:${allocSeq()}`
+        const toolCallId = `agy-wakeup-call:${step.stepIndex ?? wakeupTurn}:${randomUUID()}`
         toolCallIds.push(toolCallId)
         updates.push({
           sessionUpdate: 'tool_call',
@@ -192,25 +190,22 @@ export function createAntigravityWakeupReplayFilter(options: {
       return { updates, toolCallIds }
     },
 
+    isLiveWakeups: (): boolean => liveWakeups,
+
     filterSessionNotification(notification: SessionNotification): SessionNotification | null {
       const meta = isRecord(notification._meta) ? notification._meta : undefined
       if (meta && typeof meta.antigravityTurn === 'string') {
         return notification
       }
       const filtered = applyReplayDebt(notification)
-      const isLiveWakeup =
+      if (
         meta?.isReplay !== true &&
         LIVE_WAKEUP_UPDATES.has(notification.update.sessionUpdate) &&
         options.isIdleWakeupWindow()
-      if (!isLiveWakeup) {
-        return filtered
+      ) {
+        liveWakeups = true
       }
-      liveWakeups = true
-      if (!filtered) {
-        return null
-      }
-      const turn = options.ensureWakeupTurn()
-      return { ...filtered, _meta: { ...meta, antigravityTurn: turn } }
+      return filtered
     },
 
     dispose(): void {

@@ -1,6 +1,5 @@
 // The execution host's own `agy acp`: preferred for new chats when it answers as a compatible server.
 
-import { existsSync } from 'node:fs'
 import { readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { InitializeResponse } from '../acp/generated/acp-protocol.generated'
@@ -196,7 +195,9 @@ export async function hasAgyCredential(homePath: string): Promise<boolean> {
     if (process.platform === 'darwin' && !isAntigravityFileStorageHost(process.env)) {
       return (
         (await hasAntigravityMacOSCredential()) ||
-        existsSync(join(homePath, '.gemini', 'antigravity-cli', 'antigravity-oauth-token'))
+        (await stat(join(homePath, '.gemini', 'antigravity-cli', 'antigravity-oauth-token')).catch(
+          () => null
+        )) !== null
       )
     }
     return (await createAntigravityHostCredentialBackend(homePath).read()) !== null

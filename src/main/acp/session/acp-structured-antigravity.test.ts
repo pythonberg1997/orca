@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, expect, it, onTestFinished } from 'vitest'
 import fixture from '../fixtures/antigravity-v1.4.1-options.json'
 import { z } from 'zod'
+import { readAgentJournalTurn } from '../../../shared/agent-session/lifecycle/records/agent-session-turn-record'
 import { antigravityHostAccountHome } from '../../antigravity/antigravity-host-acp'
 import { linkAntigravityUserSkills } from '../../antigravity/antigravity-chat-user-skills'
 import {
@@ -386,4 +387,43 @@ it('probes host agy models via CLI and links plugin skills into managed chat hom
       }
     ]
   })
+})
+
+// agy 1.5.12 frames a failed request as "\n⚠ %s\n" in its own chunk, then replies end_turn.
+const UNAUTHENTICATED =
+  '⚠ UNAUTHENTICATED (code 401): Request had invalid authentication credentials. Expected OAuth 2 access token, login cookie or other valid authentication credential. See https://developers.google.com/identity/sign-in/web/devconsole-project.'
+
+const chunk = (text: string) => ({
+  sessionId: PROVIDER_SESSION,
+  update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } }
+})
+
+it("fails the turn on agy's streamed 401 notice, shown as an error row and not as its reply", async () => {
+  const rig = await openAcpAdapterRig({
+    spec: ANTIGRAVITY,
+    script: (agent) =>
+      agent.on('session/prompt', (frame) => {
+        agent.notify('session/update', chunk('The log said UNAUTHENTICATED (code 401).'))
+        agent.notify('session/update', chunk(`\n${UNAUTHENTICATED}\n`))
+        agent.reply(frame, { stopReason: 'end_turn' })
+      })
+  })
+  await rig.acquire()
+  await sendHello(rig, 'send-1')
+  const rows = await waitFor(async () => {
+    const found = await rig.rig.rows()
+    expect(found.some((row) => readAgentJournalTurn(row.body)?.state === 'completed')).toBe(true)
+    return found
+  })
+  expect(rows.map((row) => readAgentJournalTurn(row.body)?.outcome).filter(Boolean)).toEqual([
+    'failure'
+  ])
+  expect(rows.filter((row) => row.body.kind !== 'turn').map((row) => row.body)).toEqual([
+    {
+      kind: 'message',
+      role: 'assistant',
+      blocks: [{ type: 'text', text: 'The log said UNAUTHENTICATED (code 401).' }]
+    },
+    { kind: 'status', tone: 'error', text: UNAUTHENTICATED }
+  ])
 })

@@ -3,7 +3,7 @@ import { isRecord } from './agent-status/child-work/agent-status-child-work-valu
 const MAX_SWARM_WORKERS = 32
 const POSITIVE_SHARD_SUFFIX = /^[1-9]\d*$/
 
-export type AntigravityParsedSubagentToolInput =
+type AntigravityParsedSubagentToolInput =
   | {
       kind: 'invoke_subagent'
       agentType?: string

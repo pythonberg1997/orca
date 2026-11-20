@@ -3,7 +3,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { AgentHookServer } from '../../../agent-hook-server'
-import { HOOK_SILENCE_BEFORE_PROGRAM_STATUS_FALLBACK_MS } from '../../../program-status/hook-precedence'
+import {
+  ANTIGRAVITY_PARENT_WAKE_GRACE_MS,
+  HOOK_SILENCE_BEFORE_PROGRAM_STATUS_FALLBACK_MS
+} from '../../../program-status/hook-precedence'
 import { AGENT_STATUS_STALE_AFTER_MS } from '../../../../../../shared/agent-status/contracts/agent-status-freshness'
 import { buildBody, PANE, postHookEvent } from '../../server.test-fixtures'
 
@@ -115,26 +118,34 @@ it('publishes live subagents across parent Stop and ignores screen-rule done unt
     toolCall: { id: 'call-ok', name: 'invoke_subagent', args: {} }
   })
   // Numbered swarm shards (`n: 2`) killed by base name (`name: 'rev'`) must retire all shards.
+  const swarmAdd = { action: 'add', name: 'rev', n: 2 }
   await agyHook('PreToolUse', {
     transcriptPath: rootTranscript,
     stepIdx: 2,
-    toolCall: { id: 'swarm-add', name: 'swarm', args: { action: 'add', name: 'rev', n: 2 } }
+    toolCall: { id: 'swarm-add', name: 'swarm', args: swarmAdd }
   })
   await agyHook('PostToolUse', {
     transcriptPath: rootTranscript,
     stepIdx: 2,
-    toolCall: { id: 'swarm-add', name: 'swarm', args: {} }
+    toolCall: { id: 'swarm-add', name: 'swarm', args: swarmAdd }
   })
+  expect(server.getStatusSnapshot()[0]?.subagents?.map((entry) => entry.id)).toEqual(
+    expect.arrayContaining(['pending:1:2', 'swarm:rev-1', 'swarm:rev-2'])
+  )
+  const swarmKill = { action: 'kill', name: 'rev' }
   await agyHook('PreToolUse', {
     transcriptPath: rootTranscript,
     stepIdx: 3,
-    toolCall: { id: 'swarm-kill', name: 'swarm', args: { action: 'kill', name: 'rev' } }
+    toolCall: { id: 'swarm-kill', name: 'swarm', args: swarmKill }
   })
   await agyHook('PostToolUse', {
     transcriptPath: rootTranscript,
     stepIdx: 3,
-    toolCall: { id: 'swarm-kill', name: 'swarm', args: {} }
+    toolCall: { id: 'swarm-kill', name: 'swarm', args: swarmKill }
   })
+  expect(server.getStatusSnapshot()[0]?.subagents?.map((entry) => entry.id)).toEqual([
+    'pending:1:2'
+  ])
   await agyHook('Stop', {
     transcriptPath: rootTranscript,
     fullyIdle: false,
@@ -227,5 +238,99 @@ it('publishes live subagents across parent Stop and ignores screen-rule done unt
     fullyIdle: true,
     terminationReason: 'NO_TOOL_CALL'
   })
+  expect(state()).toBe('done')
+})
+
+const subagentCall = { stepIdx: 2, toolCall: { name: 'invoke_subagent', args: { Prompt: 'ls' } } }
+const child = { conversationId: 'child', lastUserInput: '' }
+
+// Order captured from agy 1.5.12: the parent stops busy and no parent hook follows its subagent's idle Stop.
+async function parentStopsWhileSubagentRuns(): Promise<void> {
+  await agyHook('PreInvocation', {})
+  await agyHook('PreToolUse', subagentCall)
+  await agyHook('PostToolUse', subagentCall)
+  await agyHook('PreInvocation', child)
+  await agyHook('PostInvocation', {})
+  await agyHook('Stop', { fullyIdle: false, terminationReason: 'NO_TOOL_CALL' })
+  await agyHook('PostInvocation', child)
+}
+
+const subagentIdleStop = () =>
+  agyHook('Stop', { ...child, fullyIdle: true, terminationReason: 'NO_TOOL_CALL' })
+
+it.each([
+  ['after', false],
+  ['before', true]
+])(
+  'ends the run on agy done that arrives %s its last subagent stops after the parent turn',
+  async (_order, doneFirst) => {
+    await parentStopsWhileSubagentRuns()
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
+    if (doneFirst) {
+      programDone()
+    }
+    await subagentIdleStop()
+    if (!doneFirst) {
+      programDone()
+    }
+    expect(state()).toBe('working')
+
+    vi.advanceTimersByTime(ANTIGRAVITY_PARENT_WAKE_GRACE_MS + 1)
+    expect(state()).toBe('done')
+  }
+)
+
+it("waits out the grace after a parent's busy Stop that lands after its subagent's", async () => {
+  await agyHook('PreInvocation', {})
+  await agyHook('PreToolUse', subagentCall)
+  await agyHook('PostToolUse', subagentCall)
+  await agyHook('PreInvocation', child)
+  vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
+  await subagentIdleStop()
+  vi.advanceTimersByTime(ANTIGRAVITY_PARENT_WAKE_GRACE_MS + 1000)
+  await agyHook('Stop', { fullyIdle: false, terminationReason: 'NO_TOOL_CALL' })
+  programDone()
+  expect(state()).toBe('working')
+
+  vi.advanceTimersByTime(ANTIGRAVITY_PARENT_WAKE_GRACE_MS + 1)
+  expect(state()).toBe('done')
+})
+
+it("keeps the run working when agy's done lands while a sibling subagent still works", async () => {
+  await parentStopsWhileSubagentRuns()
+  await agyHook('PreInvocation', { conversationId: 'sibling', lastUserInput: '' })
+  vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
+  programDone()
+  await subagentIdleStop()
+
+  vi.advanceTimersByTime(ANTIGRAVITY_PARENT_WAKE_GRACE_MS * 2)
+  expect(state()).toBe('working')
+})
+
+it('falls back to monitoring hold when a subagent ends while a parent background command still runs', async () => {
+  await agyHook('PreInvocation', {})
+  await agyHook('PreToolUse', {
+    stepIdx: 1,
+    toolCall: { name: 'run_command', args: { CommandLine: 'sleep 600', IsDaemon: false } }
+  })
+  await agyHook('PreToolUse', subagentCall)
+  await agyHook('PostToolUse', subagentCall)
+  await agyHook('Stop', { fullyIdle: false, terminationReason: 'NO_TOOL_CALL' })
+  await agyHook('PreInvocation', child)
+
+  vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] })
+  await subagentIdleStop()
+  expect(server.getStatusSnapshot()[0]).toMatchObject({
+    state: 'working',
+    workingMode: 'monitoring',
+    mainAgent: { state: 'done' }
+  })
+  expect(server.getStatusSnapshot()[0]?.subagents).toBeUndefined()
+
+  programDone()
+  vi.advanceTimersByTime(HOOK_SILENCE_BEFORE_PROGRAM_STATUS_FALLBACK_MS + 1)
+  expect(state()).toBe('working')
+
+  vi.advanceTimersByTime(AGENT_STATUS_STALE_AFTER_MS)
   expect(state()).toBe('done')
 })

@@ -1,12 +1,53 @@
-import type { AgentHookEventPayload } from '../../../../shared/agent-hook-listener/listener-event'
 import type { ParsedAgentStatusPayload } from '../../../../shared/agent-status/contracts/agent-status-types'
 import { isAgentStatusHeldOpenByChildWork } from '../../../../shared/agent-status/lifecycle/agent-lead-status-fold'
 import { AGENT_STATUS_STALE_AFTER_MS } from '../../../../shared/agent-status/contracts/agent-status-freshness'
 import type { EnrichedAgentHookEventPayload } from '../server-types'
-import type { PaneTimers } from './pane-timers'
 
 // Long tool calls can be hook-silent; allow sustained disagreement before yielding to OSC 7501.
 export const HOOK_SILENCE_BEFORE_PROGRAM_STATUS_FALLBACK_MS = 2 * 60 * 1000
+
+// Captured agy 1.5 runs woke the parent about 100 ms after its subagent's Stop; this leaves slack.
+export const ANTIGRAVITY_PARENT_WAKE_GRACE_MS = 2000
+
+/** Re-offered agy done reports, so one that arrived before its subagent's Stop is retried only once. */
+type TerminalStatusEventIdentity = { paneKey: string }
+const retriedAntigravityDones = new WeakSet<TerminalStatusEventIdentity>()
+
+function isAntigravityHelperHeldDone(
+  previous: EnrichedAgentHookEventPayload,
+  payload: ParsedAgentStatusPayload
+): boolean {
+  return (
+    payload.state === 'done' &&
+    payload.sessionBoundary !== true &&
+    previous.payload.agentType === 'antigravity' &&
+    previous.payload.workingMode !== 'monitoring' &&
+    isAgentStatusHeldOpenByChildWork(previous.payload)
+  )
+}
+
+/** agy's done can beat its subagent's Stop hook (PTY vs HTTP), so a refused one is retried after the grace. */
+export function antigravityRefusedDoneRetryMs(
+  previous: EnrichedAgentHookEventPayload | undefined,
+  payload: ParsedAgentStatusPayload,
+  yieldEndsAt: number | undefined,
+  event: TerminalStatusEventIdentity
+): number | undefined {
+  if (
+    yieldEndsAt !== Infinity ||
+    previous?.observation?.origin !== 'hook' ||
+    !isAntigravityHelperHeldDone(previous, payload) ||
+    retriedAntigravityDones.has(event)
+  ) {
+    return undefined
+  }
+  return ANTIGRAVITY_PARENT_WAKE_GRACE_MS
+}
+
+export function markAntigravityDoneRetried<T extends TerminalStatusEventIdentity>(event: T): T {
+  retriedAntigravityDones.add(event)
+  return event
+}
 
 function isOpenCodeAgent(agentType: string | undefined): boolean {
   return agentType === 'opencode' || agentType === 'opencode2'
@@ -23,7 +64,8 @@ export function isOpenCodeHookRow(
 export function programStatusHookYieldEndsAt(
   previous: EnrichedAgentHookEventPayload | undefined,
   payload: ParsedAgentStatusPayload,
-  programWorkingSince?: number
+  programWorkingSince?: number,
+  antigravityHelpersIdleAt?: number
 ): number | undefined {
   if (previous?.observation?.origin !== 'hook' || previous.providerSessionOnly === true) {
     return undefined
@@ -51,6 +93,13 @@ export function programStatusHookYieldEndsAt(
     isAgentStatusHeldOpenByChildWork(previous.payload)
   ) {
     return previous.receivedAt + AGENT_STATUS_STALE_AFTER_MS
+  }
+  // When the last subagent ends after its parent's turn, agy's done is its only end signal.
+  // A parent wake follows the run's latest hook, which may be a busy Stop after the subagent's.
+  if (antigravityHelpersIdleAt !== undefined && isAntigravityHelperHeldDone(previous, payload)) {
+    return (
+      Math.max(antigravityHelpersIdleAt, previous.receivedAt) + ANTIGRAVITY_PARENT_WAKE_GRACE_MS
+    )
   }
   // Hook and program child rosters cannot settle or reopen each other's turns.
   if (
@@ -90,9 +139,10 @@ export function programStatusHookYieldEndsAt(
 }
 
 /** Non-OSC terminal screen rules (e.g. composer_ready) yield to an Antigravity hook held open by child work. */
-export function antigravityScreenStatusHookYieldEndsAt(
+function antigravityScreenStatusHookYieldEndsAt(
   previous: EnrichedAgentHookEventPayload | undefined,
-  payload: ParsedAgentStatusPayload
+  payload: ParsedAgentStatusPayload,
+  antigravityHelpersIdleAt?: number
 ): number | undefined {
   if (
     payload.state !== 'done' ||
@@ -105,49 +155,25 @@ export function antigravityScreenStatusHookYieldEndsAt(
   ) {
     return undefined
   }
-  return previous.payload.workingMode === 'monitoring'
-    ? previous.receivedAt + AGENT_STATUS_STALE_AFTER_MS
-    : Infinity
+  if (previous.payload.workingMode === 'monitoring') {
+    return previous.receivedAt + AGENT_STATUS_STALE_AFTER_MS
+  }
+  if (antigravityHelpersIdleAt !== undefined) {
+    return (
+      Math.max(antigravityHelpersIdleAt, previous.receivedAt) + ANTIGRAVITY_PARENT_WAKE_GRACE_MS
+    )
+  }
+  return Infinity
 }
 
 export function terminalStatusHookYieldEndsAt(
   previous: EnrichedAgentHookEventPayload | undefined,
   payload: ParsedAgentStatusPayload,
   fromProgramStatus: boolean,
-  programWorkingSince?: number
+  programWorkingSince?: number,
+  antigravityHelpersIdleAt?: number
 ): number | undefined {
   return fromProgramStatus
-    ? programStatusHookYieldEndsAt(previous, payload, programWorkingSince)
-    : antigravityScreenStatusHookYieldEndsAt(previous, payload)
-}
-
-export function syncTerminalHookSilenceRecheck(input: {
-  timers: PaneTimers
-  paneKey: string
-  now: number
-  yieldEndsAt: number | undefined
-  previous: EnrichedAgentHookEventPayload | undefined
-  lastStatusByPaneKey: ReadonlyMap<string, AgentHookEventPayload>
-  reoffer: (currentPaneKey: string) => void
-}): boolean {
-  const { timers, paneKey, now, yieldEndsAt, previous, lastStatusByPaneKey, reoffer } = input
-  const hookOwnsAgent = yieldEndsAt !== undefined && now < yieldEndsAt
-  if (hookOwnsAgent && previous && Number.isFinite(yieldEndsAt)) {
-    const yieldedTo = previous.receivedAt
-    timers.defer(paneKey, yieldEndsAt - now + 1, (currentPaneKey) => {
-      const row = lastStatusByPaneKey.get(currentPaneKey)
-      // Re-offer only against the hook observation this report yielded to.
-      if (
-        row &&
-        row.providerSessionOnly !== true &&
-        'receivedAt' in row &&
-        row.receivedAt === yieldedTo
-      ) {
-        reoffer(currentPaneKey)
-      }
-    })
-  } else {
-    timers.cancel(paneKey)
-  }
-  return hookOwnsAgent
+    ? programStatusHookYieldEndsAt(previous, payload, programWorkingSince, antigravityHelpersIdleAt)
+    : antigravityScreenStatusHookYieldEndsAt(previous, payload, antigravityHelpersIdleAt)
 }

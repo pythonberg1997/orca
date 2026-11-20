@@ -7,7 +7,10 @@ import fixture from '../fixtures/antigravity-v1.4.1-options.json'
 import { readAgentJournalTurn } from '../../../shared/agent-session/lifecycle/records/agent-session-turn-record'
 import { projectStructuredAgentSessionStatusSummary } from '../../../shared/agent-session/view/structured-agent-session-projection'
 import { antigravityBrainTranscriptPaths } from '../../antigravity/antigravity-brain-transcript-records'
-import { closeProviderTimelineRigs } from '../../native-chat/agent-session-timeline/provider-timeline-assembler-test-support'
+import {
+  closeProviderTimelineRigs,
+  SESSION
+} from '../../native-chat/agent-session-timeline/provider-timeline-assembler-test-support'
 import { acpLaunchSpecFor } from '../launch/acp-launch-registry'
 import {
   openAcpAdapterRig,
@@ -379,4 +382,249 @@ it('deduplicates live-streamed reactive wakeup steps across pre-brain and pre-AC
     status: 'idle',
     lastAssistantMessage: 'FOLLOW_UP_OK'
   })
+})
+
+it('preserves wakeup replies across session resume and when brain PLANNER_RESPONSE precedes trailing ACP message chunks', async () => {
+  const userHome = await mkdtemp(join(tmpdir(), 'orca-agy-live-wakeup-resume-'))
+  onTestFinished(() => rm(userHome, { recursive: true, force: true }))
+  let resume: {
+    sessionId: string
+    key: string
+    mayBeUnsaved: () => Promise<boolean>
+    lossKeys: string[]
+  } | null = null
+  let generation = 0
+  const rig = await openAcpAdapterRig({
+    spec: ANTIGRAVITY.hostBackend!.spec,
+    launch: {
+      env: {
+        PATH: '/usr/bin',
+        HOME: userHome,
+        USERPROFILE: userHome
+      },
+      get resume() {
+        return resume
+      }
+    },
+    initialize: fixture.initialize,
+    deps: {
+      mintGeneration: () => `gen-acp-${++generation}`
+    },
+    script: (agent) => {
+      agent.on('session/new', (frame) =>
+        agent.reply(frame, { ...fixture.session, sessionId: PROVIDER_SESSION })
+      )
+      agent.on('session/resume', (frame) => agent.reply(frame, { ...fixture.session }))
+    }
+  })
+
+  await rig.acquire()
+  await sendHello(rig, 'gen1-turn')
+  const prompt1 = await rig.frame('session/prompt')
+  rig.child().agent.notify('session/update', {
+    sessionId: PROVIDER_SESSION,
+    update: {
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text: 'GEN1_PROMPT_OK' }
+    }
+  })
+  rig.child().agent.reply(prompt1, { stopReason: 'end_turn' })
+  await rig.settle()
+  await appendBrainRecords(userHome, PROVIDER_SESSION, [
+    {
+      type: 'USER_INPUT',
+      source: 'USER_EXPLICIT',
+      step_index: 1,
+      content: 'hello'
+    },
+    {
+      type: 'PLANNER_RESPONSE',
+      source: 'MODEL',
+      status: 'DONE',
+      step_index: 2,
+      content: 'GEN1_PROMPT_OK',
+      tool_calls: []
+    },
+    {
+      type: 'SYSTEM_MESSAGE',
+      source: 'SYSTEM',
+      content: `<SYSTEM_MESSAGE>\n[Message] timestamp=2026-11-19T08:00:01Z sender=${PROVIDER_SESSION}/task-1 priority=normal content=Task 1 finished\n</SYSTEM_MESSAGE>`
+    },
+    {
+      type: 'PLANNER_RESPONSE',
+      source: 'MODEL',
+      status: 'DONE',
+      content: 'GEN1_WAKEUP',
+      tool_calls: []
+    }
+  ])
+  await waitFor(async () => {
+    expect(projectStructuredAgentSessionStatusSummary(await rig.rig.rows())).toMatchObject({
+      status: 'idle',
+      lastAssistantMessage: 'GEN1_WAKEUP'
+    })
+  })
+
+  await rig.adapter.closeSession(SESSION)
+  resume = {
+    sessionId: PROVIDER_SESSION,
+    key: 'acp:antigravity:saved',
+    mayBeUnsaved: async () => false,
+    lossKeys: []
+  }
+  await rig.acquire({ fence: 2 })
+
+  await sendHello(rig, 'gen2-turn', 2)
+  const prompt2 = await rig.frame('session/prompt')
+  const { agent: agent2 } = rig.child()
+  agent2.notify('session/update', {
+    sessionId: PROVIDER_SESSION,
+    update: {
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text: 'GEN2_PROMPT_OK' }
+    }
+  })
+  agent2.reply(prompt2, { stopReason: 'end_turn' })
+  await rig.settle()
+  expect(projectStructuredAgentSessionStatusSummary(await rig.rig.rows())).toMatchObject({
+    status: 'idle',
+    lastAssistantMessage: 'GEN2_PROMPT_OK'
+  })
+
+  await appendBrainRecords(userHome, PROVIDER_SESSION, [
+    {
+      type: 'USER_INPUT',
+      source: 'USER_EXPLICIT',
+      step_index: 3,
+      content: 'hello'
+    },
+    {
+      type: 'PLANNER_RESPONSE',
+      source: 'MODEL',
+      status: 'DONE',
+      step_index: 4,
+      content: 'GEN2_PROMPT_OK',
+      tool_calls: []
+    },
+    {
+      type: 'SYSTEM_MESSAGE',
+      source: 'SYSTEM',
+      content: `<SYSTEM_MESSAGE>\n[Message] timestamp=2026-11-19T08:02:01Z sender=${PROVIDER_SESSION}/task-2 priority=normal content=Task 2 finished\n</SYSTEM_MESSAGE>`
+    },
+    {
+      type: 'PLANNER_RESPONSE',
+      source: 'MODEL',
+      status: 'DONE',
+      content: 'GEN2_SYNTHESIZED_WAKEUP',
+      tool_calls: []
+    }
+  ])
+  await waitFor(async () => {
+    expect(projectStructuredAgentSessionStatusSummary(await rig.rig.rows())).toMatchObject({
+      status: 'idle',
+      lastAssistantMessage: 'GEN2_SYNTHESIZED_WAKEUP'
+    })
+  })
+
+  await sendHello(rig, 'gen2-turn-2', 2)
+  const prompt3 = await rig.frame('session/prompt', 1)
+  agent2.notify('session/update', {
+    sessionId: PROVIDER_SESSION,
+    update: {
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text: 'GEN2_PROMPT2_OK' }
+    }
+  })
+  agent2.reply(prompt3, { stopReason: 'end_turn' })
+  await rig.settle()
+
+  await appendBrainRecords(userHome, PROVIDER_SESSION, [
+    {
+      type: 'USER_INPUT',
+      source: 'USER_EXPLICIT',
+      step_index: 5,
+      content: 'hello'
+    },
+    {
+      type: 'PLANNER_RESPONSE',
+      source: 'MODEL',
+      status: 'DONE',
+      step_index: 6,
+      content: 'GEN2_PROMPT2_OK',
+      tool_calls: []
+    },
+    {
+      type: 'SYSTEM_MESSAGE',
+      step_index: 7,
+      source: 'SYSTEM',
+      content: `<SYSTEM_MESSAGE>\n[Message] timestamp=2026-11-19T08:03:01Z sender=${PROVIDER_SESSION}/task-3 priority=normal content=Task 3 finished\n</SYSTEM_MESSAGE>`
+    }
+  ])
+  await waitFor(async () => {
+    expect(projectStructuredAgentSessionStatusSummary(await rig.rig.rows())).toMatchObject({
+      status: 'working'
+    })
+  })
+
+  agent2.notify('session/update', {
+    sessionId: PROVIDER_SESSION,
+    update: {
+      sessionUpdate: 'agent_thought_chunk',
+      content: { type: 'text', text: 'Thinking gen2' }
+    }
+  })
+  await appendBrainRecords(userHome, PROVIDER_SESSION, [
+    {
+      type: 'PLANNER_RESPONSE',
+      step_index: 8,
+      source: 'MODEL',
+      status: 'DONE',
+      thinking: 'Thinking gen2',
+      content: 'GEN2_LIVE_WAKEUP_REPLY',
+      tool_calls: []
+    },
+    {
+      type: 'SYSTEM_MESSAGE',
+      step_index: 9,
+      source: 'SYSTEM',
+      content: `<SYSTEM_MESSAGE>\n[Message] timestamp=2026-11-19T08:03:02Z sender=${PROVIDER_SESSION}/task-probe priority=low content=Task probe done\n</SYSTEM_MESSAGE>`
+    }
+  ])
+  await waitFor(async () => {
+    const currentRows = await rig.rig.rows()
+    expect(
+      currentRows.some(
+        (row) =>
+          row.body.kind === 'message' &&
+          row.body.blocks.some(
+            (block) =>
+              block.type === 'background-task' &&
+              block.taskId === `${PROVIDER_SESSION}/task-probe` &&
+              block.state === 'done'
+          )
+      )
+    ).toBe(true)
+    expect(projectStructuredAgentSessionStatusSummary(currentRows)).toMatchObject({
+      status: 'working'
+    })
+  })
+
+  agent2.notify('session/update', {
+    sessionId: PROVIDER_SESSION,
+    update: {
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text: 'GEN2_LIVE_WAKEUP_REPLY' }
+    }
+  })
+
+  await waitFor(async () => {
+    expect(projectStructuredAgentSessionStatusSummary(await rig.rig.rows())).toMatchObject({
+      status: 'idle',
+      lastAssistantMessage: 'GEN2_LIVE_WAKEUP_REPLY'
+    })
+  })
+  const rows = await rig.rig.rows()
+  const turns = rows.flatMap((row) => readAgentJournalTurn(row.body) ?? [])
+  expect(turns).toHaveLength(6)
+  expect(turns.every((turn) => turn.state === 'completed')).toBe(true)
 })

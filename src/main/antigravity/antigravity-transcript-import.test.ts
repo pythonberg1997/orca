@@ -1,224 +1,136 @@
-import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, expect, it } from 'vitest'
 import { prepareLegacyTranscriptImport } from '../native-chat/agent-session-journal/history-import/journal-legacy-import'
-import { ANTIGRAVITY_LAUNCH_SPEC } from './antigravity-acp-launch-spec'
-import { antigravityHostAccountHome } from './antigravity-host-acp'
 import { ANTIGRAVITY_TRANSCRIPT_IMPORT } from './antigravity-transcript-import'
+import { ANTIGRAVITY_LAUNCH_SPEC } from './antigravity-acp-launch-spec'
+import { adoptsCliConversations } from '../../shared/agent-session/view/structured-agent-cli-conversation-adoption'
+import { conversationFamily } from '../native-chat/conversation-adoption/structured-conversation-key'
 
-const tempRoots: string[] = []
+let root: string | null = null
 
-afterEach(async () => {
-  await Promise.all(tempRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
+afterEach(() => {
+  if (root) {
+    rmSync(root, { recursive: true, force: true })
+  }
+  root = null
 })
 
-async function createTempRoot(prefix: string): Promise<string> {
-  const root = await realpath(await mkdtemp(join(tmpdir(), prefix)))
-  tempRoots.push(root)
-  return root
-}
+const CONVERSATION = 'c8d1836b-555c-4775-b77d-1430c7f358f5'
 
-describe('ANTIGRAVITY_TRANSCRIPT_IMPORT and launch session history', () => {
-  it('admits and locates full or compact transcripts only when a conversation db exists', async () => {
-    const root = await createTempRoot('orca-agy-import-')
-    const hostAccount = antigravityHostAccountHome(root)
-    const cliStore = ANTIGRAVITY_TRANSCRIPT_IMPORT.conversationStore({
-      accountHome: hostAccount,
+it("finds an agy terminal conversation in agy's own store and imports its words", async () => {
+  root = mkdtempSync(join(tmpdir(), 'orca-agy-import-'))
+  const agyHome = { variable: 'GEMINI_HOME', path: join(root, '.gemini') }
+  const logs = join(
+    agyHome.path,
+    'antigravity-cli',
+    'brain',
+    CONVERSATION,
+    '.system_generated',
+    'logs'
+  )
+  mkdirSync(logs, { recursive: true })
+  writeFileSync(
+    join(logs, 'transcript_full.jsonl'),
+    [
+      '{"step_index":"0","source":"USER_EXPLICIT","type":"USER_INPUT","created_at":"2026-11-19T07:33:08Z","content":"<USER_REQUEST>\\nRemember ZEBRA\\n</USER_REQUEST>\\n<ADDITIONAL_METADATA>\\ntime\\n</ADDITIONAL_METADATA>"}',
+      '{"step_index":"1","source":"MODEL","type":"PLANNER_RESPONSE","created_at":"2026-11-19T07:33:09Z","content":"noted"}',
+      '{"step_index":"2","source":"SYSTEM","type":"SYSTEM_MESSAGE","content":"internal notice"}',
+      ''
+    ].join('\n')
+  )
+
+  // Orca's managed Antigravity home cannot see agy's terminal conversations.
+  expect(
+    ANTIGRAVITY_TRANSCRIPT_IMPORT.conversationStore({
+      accountHome: { variable: 'GEMINI_HOME', path: join(root, 'antigravity-chat') },
       launchEnv: {}
     })
-    expect(cliStore).toBe(join(root, '.gemini', 'antigravity-cli'))
-
-    const managedAccount = { variable: 'GEMINI_HOME', path: join(root, 'antigravity-chat') }
-    const managedStore = ANTIGRAVITY_TRANSCRIPT_IMPORT.conversationStore({
-      accountHome: managedAccount,
-      launchEnv: {}
-    })
-    expect(managedStore).toBe(join(root, 'antigravity-chat', 'antigravity-acp'))
-
-    const sessionId = '12345678-1234-4123-8123-1234567890ab'
-    const logsDir = join(cliStore!, 'brain', sessionId, '.system_generated', 'logs')
-    const compactPath = join(logsDir, 'transcript.jsonl')
-    const fullPath = join(logsDir, 'transcript_full.jsonl')
-    await mkdir(logsDir, { recursive: true })
-    await mkdir(join(cliStore!, 'conversations'), { recursive: true })
-    await writeFile(compactPath, '{"step_index":0}\n')
-
-    expect(
-      await ANTIGRAVITY_TRANSCRIPT_IMPORT.findTranscript({
-        providerSessionId: sessionId,
-        store: cliStore!,
-        launchEnv: {},
-        workspaceCwd: root
-      })
-    ).toBeNull()
-    expect(
-      await ANTIGRAVITY_TRANSCRIPT_IMPORT.admitTranscriptPath({
-        store: cliStore!,
-        transcriptPath: compactPath
-      })
-    ).toBeNull()
-
-    await writeFile(join(cliStore!, 'conversations', `${sessionId}.db`), '')
-    expect(
-      await ANTIGRAVITY_TRANSCRIPT_IMPORT.findTranscript({
-        providerSessionId: sessionId,
-        store: cliStore!,
-        launchEnv: {},
-        workspaceCwd: root
-      })
-    ).toBe(compactPath)
-    expect(
-      await ANTIGRAVITY_TRANSCRIPT_IMPORT.admitTranscriptPath({
-        store: cliStore!,
-        transcriptPath: compactPath
-      })
-    ).toBe(compactPath)
-
-    await writeFile(fullPath, '{"step_index":0}\n')
-    expect(
-      await ANTIGRAVITY_TRANSCRIPT_IMPORT.findTranscript({
-        providerSessionId: sessionId,
-        store: cliStore!,
-        launchEnv: {},
-        workspaceCwd: root
-      })
-    ).toBe(fullPath)
-    expect(
-      await ANTIGRAVITY_TRANSCRIPT_IMPORT.admitTranscriptPath({
-        store: cliStore!,
-        transcriptPath: join(root, 'elsewhere', 'transcript_full.jsonl')
-      })
-    ).toBeNull()
+  ).toBeNull()
+  const store = ANTIGRAVITY_TRANSCRIPT_IMPORT.conversationStore({
+    accountHome: agyHome,
+    launchEnv: {}
   })
-
-  it('parses agy CLI resume flags cleanly', () => {
-    const parse = ANTIGRAVITY_LAUNCH_SPEC.sessionHistory.parseResumeArgs
-    expect(parse(['-c'])).toEqual({ target: null })
-    expect(parse(['--continue'])).toEqual({ target: null })
-    expect(parse(['--conversation', 'abc-123'])).toEqual({ target: 'abc-123' })
-    expect(parse(['--conversation=abc-123'])).toEqual({ target: 'abc-123' })
-    expect(parse(['acp'])).toBeNull()
-    expect(parse(['models'])).toBeNull()
+  expect(store).toBe(join(agyHome.path, 'antigravity-cli'))
+  const transcriptPath = await ANTIGRAVITY_TRANSCRIPT_IMPORT.findTranscript({
+    providerSessionId: CONVERSATION,
+    store: store!,
+    launchEnv: {},
+    workspaceCwd: root
   })
+  expect(transcriptPath).toBe(join(logs, 'transcript_full.jsonl'))
 
-  it('decodes Antigravity transcripts into journal replacement items and enforces source identity', async () => {
-    const root = await createTempRoot('orca-agy-decode-')
-    const sessionId = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee'
-    const logsDir = join(root, 'brain', sessionId, '.system_generated', 'logs')
-    const transcriptPath = join(logsDir, 'transcript_full.jsonl')
-    await mkdir(logsDir, { recursive: true })
-    const lines = [
+  const imported = await prepareLegacyTranscriptImport({
+    agent: 'antigravity',
+    sessionId: CONVERSATION,
+    options: { filePath: transcriptPath! }
+  })
+  expect(imported).toMatchObject({
+    ok: true,
+    items: [
       {
-        step_index: 0,
-        source: 'SYSTEM',
-        type: 'CHECKPOINT',
-        created_at: '2026-11-15T06:00:00.000Z',
-        content: ''
+        identity: {
+          provider: 'legacy',
+          agent: 'antigravity',
+          sessionId: CONVERSATION,
+          recordId: 'step:0'
+        },
+        body: {
+          kind: 'message',
+          role: 'user',
+          blocks: [{ type: 'text', text: 'Remember ZEBRA' }]
+        }
       },
       {
-        step_index: 1,
-        source: 'USER_EXPLICIT',
-        type: 'USER_INPUT',
-        created_at: '2026-11-15T06:00:01.000Z',
-        content: '<USER_REQUEST>Inspect repo status</USER_REQUEST>'
-      },
-      {
-        step_index: 2,
-        source: 'MODEL',
-        type: 'PLANNER_RESPONSE',
-        created_at: '2026-11-15T06:00:02.000Z',
-        model: 'gemini-3-pro',
-        thinking: 'Let me check two files.',
-        content: 'Running checks.',
-        tool_calls: [
-          { name: 'read_file', args: { Path: '/repo/a.ts' } },
-          { name: 'run_command', args: { CommandLine: 'false' } }
-        ]
-      },
-      {
-        step_index: 3,
-        source: 'MODEL',
-        type: 'GENERIC',
-        created_at: '2026-11-15T06:00:03.000Z',
-        status: 'DONE',
-        content: 'file contents'
-      },
-      {
-        step_index: 4,
-        source: 'MODEL',
-        type: 'GENERIC',
-        created_at: '2026-11-15T06:00:04.000Z',
-        status: 'ERROR',
-        content: 'command failed'
-      },
-      {
-        step_index: 5,
-        source: 'SYSTEM',
-        type: 'SYSTEM_MESSAGE',
-        created_at: '2026-11-15T06:00:05.000Z',
-        content: 'internal wakeup'
+        identity: {
+          provider: 'legacy',
+          agent: 'antigravity',
+          sessionId: CONVERSATION,
+          recordId: 'step:1'
+        },
+        body: {
+          kind: 'message',
+          role: 'assistant',
+          blocks: [{ type: 'text', text: 'noted' }]
+        }
       }
     ]
-    await writeFile(transcriptPath, `${lines.map((row) => JSON.stringify(row)).join('\n')}\n`)
-
-    const prepared = await prepareLegacyTranscriptImport({
-      agent: 'antigravity',
-      sessionId,
-      options: {
-        filePath: transcriptPath,
-        source: { providerSessionId: sessionId, workspaceCwd: '/repo' }
-      }
-    })
-    expect(prepared.ok).toBe(true)
-    if (!prepared.ok) {
-      throw new Error(prepared.error)
-    }
-    expect(prepared.sourceEmpty).toBe(false)
-    expect(prepared.items.map((item) => item.body)).toEqual([
-      { kind: 'message', role: 'user', blocks: [{ type: 'text', text: 'Inspect repo status' }] },
-      {
-        kind: 'message',
-        role: 'reasoning',
-        blocks: [{ type: 'text', text: 'Let me check two files.' }]
-      },
-      { kind: 'message', role: 'assistant', blocks: [{ type: 'text', text: 'Running checks.' }] },
-      {
-        kind: 'tool-call',
-        name: 'read_file',
-        input: { Path: '/repo/a.ts' },
-        callId: 'step:2:call:0',
-        state: 'completed'
-      },
-      {
-        kind: 'tool-call',
-        name: 'run_command',
-        input: { CommandLine: 'false' },
-        callId: 'step:2:call:1',
-        state: 'completed'
-      },
-      {
-        kind: 'message',
-        role: 'tool',
-        blocks: [{ type: 'tool-result', output: 'file contents', callId: 'step:2:call:0' }]
-      },
-      {
-        kind: 'message',
-        role: 'tool',
-        blocks: [
-          { type: 'tool-result', output: 'command failed', callId: 'step:2:call:1', isError: true }
-        ]
-      }
-    ])
-
-    const mismatched = await prepareLegacyTranscriptImport({
-      agent: 'antigravity',
-      sessionId,
-      options: {
-        filePath: transcriptPath,
-        source: { providerSessionId: 'other-session-id', workspaceCwd: '/repo' }
-      }
-    })
-    expect(mismatched.ok).toBe(false)
   })
+  // Another conversation's transcript never stands in for the requested one.
+  expect(
+    await prepareLegacyTranscriptImport({
+      agent: 'antigravity',
+      sessionId: 'another-conversation',
+      options: { filePath: transcriptPath! }
+    })
+  ).toMatchObject({ ok: false })
+})
+
+it('recognizes agy terminal resumes of a conversation', () => {
+  const parse = ANTIGRAVITY_LAUNCH_SPEC.sessionHistory.parseResumeArgs
+  expect(parse(['--conversation', CONVERSATION])).toEqual({ target: CONVERSATION })
+  expect(parse([`--conversation=${CONVERSATION}`])).toEqual({ target: CONVERSATION })
+  expect(parse(['-c'])).toBeNull()
+  expect(parse(['-i', 'hello'])).toBeNull()
+})
+
+it('offers agy terminal conversations to chats, except from an agy set up with an API key', async () => {
+  expect(adoptsCliConversations('antigravity')).toBe(true)
+  expect(conversationFamily('antigravity')).toBe('antigravity')
+
+  root = mkdtempSync(join(tmpdir(), 'orca-agy-key-'))
+  const agyHome = { variable: 'GEMINI_HOME', path: join(root, '.gemini') }
+  mkdirSync(join(agyHome.path, 'antigravity-cli'), { recursive: true })
+  const candidates = () =>
+    ANTIGRAVITY_TRANSCRIPT_IMPORT.accountHomeCandidates({
+      settings: {},
+      selectedAccountHome: agyHome
+    })
+  expect(await candidates()).toContainEqual(agyHome)
+  writeFileSync(
+    join(agyHome.path, 'antigravity-cli', 'settings.json'),
+    '{"modelProvider":"gemini-api-key"}'
+  )
+  expect(await candidates()).not.toContainEqual(agyHome)
 })

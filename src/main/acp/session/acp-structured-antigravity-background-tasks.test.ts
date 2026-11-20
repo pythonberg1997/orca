@@ -66,8 +66,9 @@ it('surfaces background shell tasks from brain logs and manage_task across live,
   const task1LogUri = pathToFileURL(task1LogPath).href
   const task1Cmd = 'export PATH="/usr/bin"\npnpm check:changed'
 
-  // Case 1: Real agy 1.5.12 starts a background shell command where ACP tool_call_update has no
-  // background metadata, and brain logs record PLANNER_RESPONSE(toolSummary) + GENERIC(RUNNING).
+  // Case 1: Real agy 1.5.12 leaves run_command `in_progress` across `end_turn` (#44578), while
+  // brain logs record PLANNER_RESPONSE(toolSummary) + GENERIC(RUNNING); both unify into 1 task row
+  // (`call_bg_1`) and promote to live childWork with no duplicate cards.
   await sendHello(rig, 'bg-shell-turn')
   const prompt1 = await rig.frame('session/prompt', 0)
   agent.notify('session/update', {
@@ -83,16 +84,10 @@ it('surfaces background shell tasks from brain logs and manage_task across live,
   })
   agent.notify('session/update', {
     sessionId: PROVIDER_SESSION,
-    update: {
-      sessionUpdate: 'tool_call_update',
-      toolCallId: 'call_bg_1',
-      status: 'failed'
-    }
-  })
-  agent.notify('session/update', {
-    sessionId: PROVIDER_SESSION,
     update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'RUNNING' } }
   })
+  agent.reply(prompt1, { stopReason: 'end_turn' })
+  await rig.settle()
   await appendBrainRecords(userHome, PROVIDER_SESSION, [
     { step_index: 0, source: 'USER_EXPLICIT', type: 'USER_INPUT', status: 'DONE', content: 'run' },
     {
@@ -134,15 +129,13 @@ it('surfaces background shell tasks from brain logs and manage_task across live,
       tool_calls: []
     }
   ])
-  agent.reply(prompt1, { stopReason: 'end_turn' })
-  await rig.settle()
 
   await waitFor(async () => {
     expect(childWork).toContainEqual(
       expect.objectContaining({
         type: 'live',
         child: {
-          handle: { idKind: 'task_id', id: `acp-task:${task1Id}` },
+          handle: { idKind: 'task_id', id: 'acp-task:call_bg_1' },
           kind: 'command',
           residency: 'background',
           state: 'working',
@@ -152,16 +145,16 @@ it('surfaces background shell tasks from brain logs and manage_task across live,
       })
     )
     const tasks = backgroundTaskRows(await rig.rig.rows())
-    expect(tasks).toContainEqual(
+    expect(tasks.filter((task) => task.parentToolUseId === 'call_bg_1')).toEqual([
       expect.objectContaining({
-        taskId: task1Id,
+        taskId: 'call_bg_1',
         kind: 'command',
         label: 'Run repo ratchets',
         state: 'working',
         parentToolUseId: 'call_bg_1',
         outputFile: task1LogPath
       })
-    )
+    ])
   })
   expect(
     childWork.some((edge) => 'handle' in edge && edge.handle.id === 'acp-task:fake-task-999')
@@ -210,7 +203,7 @@ it('surfaces background shell tasks from brain logs and manage_task across live,
     expect(childWork).toContainEqual(
       expect.objectContaining({
         type: 'removed',
-        handle: { idKind: 'task_id', id: `acp-task:${task1Id}` }
+        handle: { idKind: 'task_id', id: 'acp-task:call_bg_1' }
       })
     )
     expect(childWork).toContainEqual(
@@ -225,15 +218,58 @@ it('surfaces background shell tasks from brain logs and manage_task across live,
       })
     )
     const tasks = backgroundTaskRows(await rig.rig.rows())
-    expect(tasks).toContainEqual(expect.objectContaining({ taskId: task1Id, state: 'done' }))
+    expect(tasks).toContainEqual(
+      expect.objectContaining({ taskId: 'call_bg_1', state: 'done', outputFile: task1LogPath })
+    )
     expect(tasks).toContainEqual(
       expect.objectContaining({ taskId: task2Id, label: 'pnpm lint', state: 'working' })
     )
   })
 
   // Case 3c: task-2 fails with exit code 1 -> removed in childWork and durable block updated to `blocked`.
-  // Case 4: task-3 starts and is killed via manage_task(Action: 'kill') -> settled as `idle`.
+  // Case 4: task-3 opens pending via ACP and receives CommandLine via `tool_call_update` (`item.update`),
+  // unifies across end_turn, is killed via manage_task(Action: 'kill'), and keeps `idle` even if a
+  // trailing non-zero ACP tool_call_update arrives later.
   const task3Id = `${PROVIDER_SESSION}/task-3`
+  await sendHello(rig, 'bg-shell-kill-turn')
+  const prompt2 = await rig.frame('session/prompt', 1)
+  // Flush the prior buffered wakeup (step 6 tool_call + step 8 NEXT_TASK) that <= 1.5.9 replays on next prompt.
+  agent.notify('session/update', {
+    sessionId: PROVIDER_SESSION,
+    update: {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'replayed_task2_call',
+      title: 'run_command',
+      kind: 'execute',
+      status: 'completed'
+    }
+  })
+  agent.notify('session/update', {
+    sessionId: PROVIDER_SESSION,
+    update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'NEXT_TASK' } }
+  })
+  agent.notify('session/update', {
+    sessionId: PROVIDER_SESSION,
+    update: {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'call_bg_3',
+      title: 'run_command',
+      kind: 'execute',
+      status: 'pending'
+    }
+  })
+  agent.notify('session/update', {
+    sessionId: PROVIDER_SESSION,
+    update: {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'call_bg_3',
+      status: 'in_progress',
+      rawInput: { CommandLine: 'pnpm dev' }
+    }
+  })
+  agent.reply(prompt2, { stopReason: 'end_turn' })
+  await rig.settle()
+
   await appendBrainRecords(userHome, PROVIDER_SESSION, [
     {
       step_index: 9,
@@ -244,6 +280,13 @@ it('surfaces background shell tasks from brain logs and manage_task across live,
     },
     {
       step_index: 10,
+      source: 'USER_EXPLICIT',
+      type: 'USER_INPUT',
+      status: 'DONE',
+      content: 'start dev'
+    },
+    {
+      step_index: 11,
       source: 'MODEL',
       type: 'PLANNER_RESPONSE',
       status: 'DONE',
@@ -253,7 +296,7 @@ it('surfaces background shell tasks from brain logs and manage_task across live,
       ]
     },
     {
-      step_index: 11,
+      step_index: 12,
       source: 'MODEL',
       type: 'GENERIC',
       status: 'RUNNING',
@@ -272,7 +315,7 @@ it('surfaces background shell tasks from brain logs and manage_task across live,
       expect.objectContaining({
         type: 'live',
         child: expect.objectContaining({
-          handle: { idKind: 'task_id', id: `acp-task:${task3Id}` },
+          handle: { idKind: 'task_id', id: 'acp-task:call_bg_3' },
           description: 'Dev server',
           state: 'working'
         })
@@ -282,7 +325,7 @@ it('surfaces background shell tasks from brain logs and manage_task across live,
 
   await appendBrainRecords(userHome, PROVIDER_SESSION, [
     {
-      step_index: 12,
+      step_index: 13,
       source: 'MODEL',
       type: 'PLANNER_RESPONSE',
       status: 'DONE',
@@ -290,14 +333,14 @@ it('surfaces background shell tasks from brain logs and manage_task across live,
       tool_calls: [{ name: 'manage_task', args: { Action: 'kill', TaskId: task3Id } }]
     },
     {
-      step_index: 13,
+      step_index: 14,
       source: 'MODEL',
       type: 'GENERIC',
       status: 'DONE',
       content: `Task "${task3Id}" cancelled.`
     },
     {
-      step_index: 14,
+      step_index: 15,
       source: 'MODEL',
       type: 'PLANNER_RESPONSE',
       status: 'DONE',
@@ -310,7 +353,7 @@ it('surfaces background shell tasks from brain logs and manage_task across live,
     expect(childWork).toContainEqual(
       expect.objectContaining({
         type: 'removed',
-        handle: { idKind: 'task_id', id: `acp-task:${task3Id}` }
+        handle: { idKind: 'task_id', id: 'acp-task:call_bg_3' }
       })
     )
     const tasks = backgroundTaskRows(await rig.rig.rows())
@@ -321,6 +364,21 @@ it('surfaces background shell tasks from brain logs and manage_task across live,
         error: 'Command exited with code 1'
       })
     )
-    expect(tasks).toContainEqual(expect.objectContaining({ taskId: task3Id, state: 'idle' }))
+    expect(tasks).toContainEqual(expect.objectContaining({ taskId: 'call_bg_3', state: 'idle' }))
   })
+
+  // Trailing non-zero signal exit from ACP after manage_task(kill) must not regress `idle` to `blocked`.
+  agent.notify('session/update', {
+    sessionId: PROVIDER_SESSION,
+    update: {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'call_bg_3',
+      status: 'failed',
+      rawOutput: { combinedOutput: 'terminated', exitCode: 137 }
+    }
+  })
+  await rig.settle()
+  expect(
+    backgroundTaskRows(await rig.rig.rows()).filter((task) => task.taskId === 'call_bg_3')
+  ).toEqual([expect.objectContaining({ taskId: 'call_bg_3', state: 'idle' })])
 })

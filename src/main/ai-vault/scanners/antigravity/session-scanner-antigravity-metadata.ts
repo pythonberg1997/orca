@@ -46,7 +46,7 @@ export function antigravitySummariesDbPath(historyPath: string): string {
   return `${historyPath.replace(/[\\/]history\.jsonl$/, '') + separator}conversation_summaries.db`
 }
 
-export function antigravityWorkspaceFromUri(uri: string): string | null {
+function antigravityWorkspaceFromUri(uri: string): string | null {
   if (!uri.startsWith('file://')) {
     return null
   }
@@ -55,10 +55,9 @@ export function antigravityWorkspaceFromUri(uri: string): string | null {
     if (parsed.protocol !== 'file:') {
       return null
     }
-    const decodedPath = decodeURIComponent(parsed.pathname)
-    // Decode POSIX and Windows file:// URIs regardless of the scanning host OS.
+    // Decode POSIX and Windows file:// URIs regardless of the scanning host OS (including %3A drive colons and UNC hosts).
     const isWindows =
-      (!parsed.hostname && /^\/[A-Za-z]:(?:\/|$)/.test(decodedPath)) ||
+      (!parsed.hostname && /^\/[A-Za-z](?::|%3[Aa])(?:\/|$)/.test(parsed.pathname)) ||
       (Boolean(parsed.hostname) && parsed.hostname !== 'localhost')
     let resolved = fileURLToPath(parsed, { windows: isWindows })
     if (
@@ -111,7 +110,7 @@ export function antigravityMetadataWorkspaces(contents: {
   metadata: string | null
   projects: string | null
   lastConversations: string | null
-}): Map<string, string | null> {
+}): { paths: Map<string, string | null>; workspaceUriPathById: Map<string, string | null> } {
   const projectPaths = new Map<string, string | null>()
   for (const [key, value] of entries(parse(contents.projects))) {
     if (typeof value !== 'string') {
@@ -129,6 +128,7 @@ export function antigravityMetadataWorkspaces(contents: {
       unique(paths, id, path)
     }
   }
+  const workspaceUriPathById = new Map<string, string | null>()
   for (const [id, value] of entries(parse(contents.metadata)?.conversations)) {
     const summary = record(record(value)?.summary)
     const projectId = summary?.ProjectID
@@ -136,12 +136,14 @@ export function antigravityMetadataWorkspaces(contents: {
     if (projectPath !== undefined) {
       unique(paths, id, projectPath)
     }
+    // `agy acp` chats keep no history.jsonl and share the CLI's default project, so only this
+    // names their folder.
     const uriPath = antigravitySummaryWorkspaceUriPath(summary?.WorkspaceURIs)
     if (uriPath !== undefined) {
-      unique(paths, id, uriPath)
+      unique(workspaceUriPathById, id, uriPath)
     }
   }
-  return paths
+  return { paths, workspaceUriPathById }
 }
 
 export async function readBoundedAntigravityIndex(

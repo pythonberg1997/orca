@@ -22,6 +22,7 @@ const SQLITE_HARNESSES = new Set([
   'terminal-topology-profile-fixture',
   'acknowledged-terminal-tab-retirement-fixture',
   'last-status.test-fixtures',
+  'server-tmux-hook-root.test-fixtures',
   // Opens the index read-only after the indexer closes; Bun's macOS SQLite refuses a WAL file then.
   'session-search-indexer-test-fixture',
   'session-search-index-test-fixture',

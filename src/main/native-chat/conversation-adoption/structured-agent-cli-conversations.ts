@@ -45,7 +45,6 @@ export function absoluteConversationStore(path: string | null | undefined): stri
 }
 
 export function directoryTranscriptImport(directories: {
-  accountHomeVariable?: string
   conversationStore: (input: {
     accountHomePath: string
     launchEnv: NodeJS.ProcessEnv
@@ -54,8 +53,6 @@ export function directoryTranscriptImport(directories: {
     settings: StructuredAgentTranscriptImportSettings
     selectedAccountHomePath: string
   }) => string[]
-  admitRoot?: (store: string) => string
-  validateAdmittedPath?: (input: { store: string; admittedPath: string }) => Promise<boolean>
   /** Never derive fallback roots outside this store. */
   findTranscript: (input: {
     providerSessionId: string
@@ -66,32 +63,19 @@ export function directoryTranscriptImport(directories: {
   }) => Promise<string | null>
   handleNamesTranscript?: true
 }): StructuredAgentTranscriptImport {
-  const matchesHome = (home: AgentSessionAccountHome) =>
-    isLegacyAgentSessionAccountHome(home) &&
-    (directories.accountHomeVariable === undefined ||
-      home.variable === directories.accountHomeVariable)
   return {
     readableContext: { kind: 'file' },
     conversationStore: ({ accountHome, launchEnv }) =>
-      matchesHome(accountHome) && isLegacyAgentSessionAccountHome(accountHome)
+      isLegacyAgentSessionAccountHome(accountHome)
         ? absoluteConversationStore(
             directories.conversationStore({ accountHomePath: accountHome.path, launchEnv })
           )
         : null,
-    admitTranscriptPath: async ({ store, transcriptPath }) => {
-      const root = directories.admitRoot ? directories.admitRoot(store) : store
-      const admitted = await admitTranscriptPath(root, transcriptPath)
-      if (!admitted) {
-        return null
-      }
-      return !directories.validateAdmittedPath ||
-        (await directories.validateAdmittedPath({ store, admittedPath: admitted.path }))
-        ? admitted.path
-        : null
-    },
+    admitTranscriptPath: async ({ store, transcriptPath }) =>
+      (await admitTranscriptPath(store, transcriptPath))?.path ?? null,
     ...(directories.handleNamesTranscript ? { handleNamesTranscript: true } : {}),
     accountHomeCandidates: ({ settings, selectedAccountHome }) =>
-      matchesHome(selectedAccountHome) && isLegacyAgentSessionAccountHome(selectedAccountHome)
+      isLegacyAgentSessionAccountHome(selectedAccountHome)
         ? directories
             .accountHomeCandidates({ settings, selectedAccountHomePath: selectedAccountHome.path })
             .map((path) => path.trim())

@@ -1,19 +1,15 @@
 import { z } from 'zod'
-import type { AgentJournalToolCallItem } from '../../../shared/agent-session/journal/agent-session-journal-types'
 import { isRecord } from '../../../shared/agent-status/child-work/agent-status-child-work-value-guards'
 import { BoundedMap } from '../../../shared/collections/bounded-map'
 import { isBackgroundTaskBlock } from '../../../shared/native-chat/native-chat-types'
 import { isSettledBackgroundTaskState } from '../../../shared/native-chat/input/task-lists/native-chat-background-task-row'
-import {
-  parseAntigravityBackgroundTaskStart,
-  summarizeCommandDescription
-} from '../../antigravity/antigravity-brain-background-task-records'
+import { summarizeCommandDescription } from '../../antigravity/antigravity-brain-background-task-records'
 import type { AntigravityBrainRecord } from '../../antigravity/antigravity-brain-transcript-records'
 import type { ProviderTimelineEvent } from '../../native-chat/agent-session-timeline/provider-timeline-event'
-import type { ToolCallUpdate } from '../generated/acp-protocol.generated'
 import type { AcpBackgroundTaskUpdate } from './acp-dialect'
 
 const RECENT_EXECUTE_LIMIT = 32
+const TASK_ALIAS_LIMIT = 128
 
 export const brainBackgroundTaskSchema = z.object({
   taskId: z.string().trim().min(1),
@@ -36,6 +32,7 @@ type PlannedTaskCall = {
   kind: TaskKind
   label?: string
   command?: string
+  isDaemon?: boolean
 }
 
 function usableLabel(value: unknown): string | undefined {
@@ -57,7 +54,8 @@ function planBrainTaskCall(name: string, args: Record<string, unknown>): Planned
     return {
       kind: 'command',
       ...(label ? { label } : {}),
-      ...(command ? { command } : {})
+      ...(command ? { command } : {}),
+      ...(args.IsDaemon === true ? { isDaemon: true } : {})
     }
   }
   if (name === 'schedule') {
@@ -71,90 +69,14 @@ function planBrainTaskCall(name: string, args: Record<string, unknown>): Planned
   return null
 }
 
-function toolOutputText(
-  update: ToolCallUpdate,
-  tool: AgentJournalToolCallItem
-): string | undefined {
-  if (typeof update.rawOutput === 'string') {
-    return update.rawOutput
-  }
-  if (isRecord(update.rawOutput)) {
-    const text =
-      asString(update.rawOutput.stdout) ??
-      asString(update.rawOutput.combinedOutput) ??
-      asString(update.rawOutput.combined_output)
-    if (text !== undefined) {
-      return text
-    }
-  }
-  const contentText = update.content
-    ?.flatMap((item) =>
-      item.type === 'content' && item.content.type === 'text' ? [item.content.text] : []
-    )
-    .join('\n')
-  if (contentText) {
-    return contentText
-  }
-  return tool.output?.head
-}
-
-/** Extract Antigravity background shell/monitor/workflow updates from direct ACP tool frames. */
-export function antigravityToolBackgroundTasks(
-  update: ToolCallUpdate,
-  tool: AgentJournalToolCallItem
-): AcpBackgroundTaskUpdate[] {
-  if (
-    (tool.name === 'manage_task' || update.title === 'manage_task') &&
-    update.status === 'completed' &&
-    isRecord(tool.input) &&
-    tool.input.Action === 'kill'
-  ) {
-    const taskId = asString(tool.input.TaskId)?.trim()
-    return taskId ? [{ taskId, state: 'idle', summary: '', error: '' }] : []
-  }
-
-  const rawName = update.title ?? tool.name
-  const isTaskTool =
-    tool.name === 'execute' ||
-    rawName === 'run_command' ||
-    rawName === 'schedule' ||
-    rawName === 'run_workflow'
-  if (!isTaskTool) {
-    return []
-  }
-
-  const started = parseAntigravityBackgroundTaskStart(toolOutputText(update, tool))
-  if (!started) {
-    return []
-  }
-  const kind: TaskKind =
-    rawName === 'schedule' ? 'monitor' : rawName === 'run_workflow' ? 'workflow' : 'command'
-  const rawInput = isRecord(update.rawInput) ? update.rawInput : undefined
-  const toolInput = isRecord(tool.input) ? tool.input : undefined
-  const label =
-    usableLabel(rawInput?.toolSummary) ??
-    usableLabel(rawInput?.Description) ??
-    summarizeCommandDescription(
-      asString(rawInput?.Prompt) ?? asString(rawInput?.CommandLine) ?? asString(toolInput?.command)
-    ) ??
-    started.description
-
-  return [
-    {
-      taskId: started.taskId,
-      kind,
-      state: kind === 'monitor' ? 'monitoring' : 'working',
-      ...(label ? { label } : {}),
-      ...(started.outputFile ? { outputFile: started.outputFile } : {}),
-      parentToolUseId: update.toolCallId
-    }
-  ]
-}
-
-export function createAntigravityBrainBackgroundTasks(now: () => number) {
+export function createAntigravityBrainBackgroundTasks(
+  now: () => number,
+  confirmTask?: (taskId: string, settled?: AcpBackgroundTaskUpdate) => void
+) {
   const openTasks = new Set<string>()
   const knownTasks = new Set<string>()
   const recentExecuteCalls = new BoundedMap<string, string>({ maxEntries: RECENT_EXECUTE_LIMIT })
+  const idByBrainTask = new BoundedMap<string, string>({ maxEntries: TASK_ALIAS_LIMIT })
   const pendingStepCalls: (PlannedTaskCall | null)[] = []
 
   return {
@@ -163,7 +85,9 @@ export function createAntigravityBrainBackgroundTasks(now: () => number) {
     observeAppliedEvents(events: readonly ProviderTimelineEvent[]): void {
       for (const event of events) {
         if (
-          (event.type === 'item.open' || event.type === 'item.close') &&
+          (event.type === 'item.open' ||
+            event.type === 'item.update' ||
+            event.type === 'item.close') &&
           event.body.kind === 'tool-call' &&
           event.body.callId &&
           isRecord(event.body.input) &&
@@ -198,9 +122,18 @@ export function createAntigravityBrainBackgroundTasks(now: () => number) {
       for (const call of toolCalls) {
         pendingStepCalls.push(planBrainTaskCall(call.name, call.args))
         if (call.name === 'manage_task' && call.args.Action === 'kill') {
-          const taskId = asString(call.args.TaskId)?.trim()
+          const rawTaskId = asString(call.args.TaskId)?.trim()
+          const taskId = rawTaskId ? (idByBrainTask.get(rawTaskId) ?? rawTaskId) : ''
           if (taskId && (openTasks.delete(taskId) || knownTasks.has(taskId))) {
-            settled.push({ taskId, state: 'idle', summary: '', error: '', settledAt: at })
+            const update: AcpBackgroundTaskUpdate = {
+              taskId,
+              state: 'idle',
+              summary: '',
+              error: '',
+              settledAt: at
+            }
+            confirmTask?.(taskId, update)
+            settled.push(update)
           }
         }
       }
@@ -215,18 +148,21 @@ export function createAntigravityBrainBackgroundTasks(now: () => number) {
         return []
       }
       const { taskId, description, outputFile } = record.backgroundTask
-      openTasks.add(taskId)
-      knownTasks.add(taskId)
-      const kind = stepMeta?.kind ?? 'command'
-      const label = stepMeta?.label ?? description
       const parentToolUseId = stepMeta?.command
         ? recentExecuteCalls.get(stepMeta.command)
         : undefined
+      const effectiveId = parentToolUseId ?? taskId
+      idByBrainTask.set(taskId, effectiveId)
+      confirmTask?.(effectiveId)
+      openTasks.add(effectiveId)
+      knownTasks.add(effectiveId)
+      const kind = stepMeta?.kind ?? 'command'
+      const label = stepMeta?.label ?? description
       return [
         {
-          taskId,
+          taskId: effectiveId,
           kind,
-          state: kind === 'monitor' ? 'monitoring' : 'working',
+          state: kind === 'monitor' || stepMeta?.isDaemon ? 'monitoring' : 'working',
           ...(label ? { label } : {}),
           ...(outputFile ? { outputFile } : {}),
           ...(parentToolUseId ? { parentToolUseId } : {}),
@@ -244,18 +180,26 @@ export function createAntigravityBrainBackgroundTasks(now: () => number) {
       for (const msg of messages) {
         if (msg.stopsAllSubagents) {
           for (const taskId of openTasks) {
-            updates.push({ taskId, state: 'idle', summary: '', error: '', settledAt: at })
+            const update: AcpBackgroundTaskUpdate = {
+              taskId,
+              state: 'idle',
+              summary: '',
+              error: '',
+              settledAt: at
+            }
+            confirmTask?.(taskId, update)
+            updates.push(update)
           }
           openTasks.clear()
         } else if (msg.isTask) {
-          const wasOpen = openTasks.delete(msg.sender)
-          if (wasOpen || knownTasks.has(msg.sender) || resumed) {
+          const effectiveId = idByBrainTask.get(msg.sender) ?? msg.sender
+          const wasOpen = openTasks.delete(effectiveId)
+          if (wasOpen || knownTasks.has(effectiveId) || resumed) {
             updates.push({
-              taskId: msg.sender,
+              taskId: effectiveId,
               fallbackKind: 'command',
               state: msg.taskState ?? 'done',
-              summary: '',
-              error: msg.taskError ?? '',
+              ...(msg.taskError ? { error: msg.taskError } : {}),
               ...(msg.outputFile ? { outputFile: msg.outputFile } : {}),
               settledAt: at
             })
@@ -269,6 +213,7 @@ export function createAntigravityBrainBackgroundTasks(now: () => number) {
       openTasks.clear()
       knownTasks.clear()
       recentExecuteCalls.clear()
+      idByBrainTask.clear()
       pendingStepCalls.length = 0
     }
   }

@@ -1,14 +1,12 @@
+import { randomUUID } from 'node:crypto'
 import type { AcpBackgroundTaskUpdate, AcpSubagentUpdate } from '../acp/acp-dialects/acp-dialect'
 import { createAntigravityBrainBackgroundTasks } from '../acp/acp-dialects/antigravity-background-tasks'
 import { ANTIGRAVITY_BRAIN_NOTIFICATION } from '../acp/acp-dialects/antigravity-subagents'
 import type { AcpStructuredLane } from '../acp/journal/acp-structured-lane'
-import { isAcpPromptTurnId } from '../acp/timeline/acp-prompt-turns'
 import type { ProviderTimelineEvent } from '../native-chat/agent-session-timeline/provider-timeline-event'
-import {
-  createAntigravityWakeupReplayFilter,
-  nonWhitespaceLength
-} from './antigravity-acp-wakeup-replay-filter'
+import { createAntigravityWakeupReplayFilter } from './antigravity-acp-wakeup-replay-filter'
 import { createAntigravityBrainChildren } from './antigravity-brain-children'
+import { createAntigravityBrainTurnTracker } from './antigravity-brain-turn-tracker'
 import {
   antigravityAcpBrainDir,
   antigravityBrainTranscriptPaths,
@@ -40,24 +38,19 @@ export function observeAntigravityAcpBrainSession(input: {
   const { providerSessionId, lane, now } = input
   const parentPaths = antigravityBrainTranscriptPaths(brainDir, providerSessionId)
   const parentCursor = createAntigravityTranscriptCursor(parentPaths, input.resumed)
-  const parentTasks = createAntigravityBrainBackgroundTasks(now)
+  const parentTasks = createAntigravityBrainBackgroundTasks(now, (taskId, settled) =>
+    lane.translator.confirmBackgroundTask(taskId, settled)
+  )
+  const tracker = createAntigravityBrainTurnTracker(input.resumed)
   const pendingWakeupCalls: string[] = []
-  let activePromptChars = 0
-  let activePromptSawTraffic = false
-  let latestPromptChars: number | null = input.resumed ? 0 : null
-  let seenUserInput = input.resumed
-  let cycleRanStep = input.resumed
-  let transcriptCharsInCycle = 0
   let supersededByNewerUserInput = false
-  let promptOpen = false
-  let unhandledSystemWake = false
   let wakeupTurn: string | null = null
-  let nextSeq = 1
   let graceTicks = 0
   let hadOpenSubagents = false
   let publishing = false
   let disposed = false
 
+  const isAgentTurnOpen = (): boolean => lane.translator.agentTurnCalls() !== null
   const isCurrentWakeupOpen = (): boolean =>
     wakeupTurn !== null &&
     (lane.openTurnId === wakeupTurn ||
@@ -68,17 +61,8 @@ export function observeAntigravityAcpBrainSession(input: {
     isWakeupOpen: () => wakeupTurn !== null,
     isIdleWakeupWindow: () =>
       !publishing &&
-      !promptOpen &&
-      latestPromptChars !== null &&
-      (lane.openTurnId === null || isCurrentWakeupOpen()),
-    ensureWakeupTurn: () => {
-      if (!wakeupTurn) {
-        unhandledSystemWake = false
-        wakeupTurn = `agy-wakeup:live:${nextSeq++}`
-        poller.kick()
-      }
-      return wakeupTurn
-    }
+      tracker.isIdleWakeupCandidate() &&
+      (lane.openTurnId === null || isCurrentWakeupOpen() || isAgentTurnOpen())
   })
 
   const applyEvents = (events: readonly ProviderTimelineEvent[]): void => {
@@ -99,14 +83,17 @@ export function observeAntigravityAcpBrainSession(input: {
     end?: { stopReason: string }
     subagents?: AcpSubagentUpdate[]
     backgroundTasks?: AcpBackgroundTaskUpdate[]
-  }): void => {
+  }): void =>
     applyEvents(lane.translator.notification(ANTIGRAVITY_BRAIN_NOTIFICATION, payload, now()))
-  }
 
-  const emitWakeupUpdate = (turn: string, update: Record<string, unknown>): void => {
-    const params = { sessionId: providerSessionId, _meta: { antigravityTurn: turn }, update }
-    applyEvents(lane.translator.notification('session/update', params, now()))
-  }
+  const emitWakeupUpdate = (turn: string, update: Record<string, unknown>): void =>
+    applyEvents(
+      lane.translator.notification(
+        'session/update',
+        { sessionId: providerSessionId, _meta: { antigravityTurn: turn }, update },
+        now()
+      )
+    )
 
   const resetWakeup = (): void => {
     wakeupTurn = null
@@ -123,8 +110,8 @@ export function observeAntigravityAcpBrainSession(input: {
       ...(backgroundTasks.length > 0 ? { backgroundTasks } : {})
     }
     if (turnTag !== undefined) {
-      unhandledSystemWake = false
-      wakeupTurn = `agy-wakeup:${turnTag}:${nextSeq++}`
+      tracker.clearUnhandledWake()
+      wakeupTurn = `agy-wakeup:${turnTag}:${randomUUID()}`
       emitBrainTurn({ turn: wakeupTurn, started: true, ...payload })
     } else if (subagents.length > 0 || backgroundTasks.length > 0) {
       emitBrainTurn(payload)
@@ -139,37 +126,51 @@ export function observeAntigravityAcpBrainSession(input: {
     }
   }
 
-  const hasCompletedPromptBudget = (): boolean =>
-    !supersededByNewerUserInput &&
-    !promptOpen &&
-    !lane.openTurnId &&
-    seenUserInput &&
-    latestPromptChars !== null &&
-    transcriptCharsInCycle >= latestPromptChars
+  const isLiveTurnOpen = (): boolean => wakeupTurn !== null || isAgentTurnOpen()
+
+  const settleLiveTurn = (stopReason: string | null): void => {
+    if (!stopReason) {
+      return
+    }
+    if (wakeupTurn) {
+      closeWakeupTurn(stopReason)
+    } else if (stopReason === 'end_turn') {
+      lane.agentTurn.endUnasked()
+    } else {
+      lane.agentTurn.end(stopReason)
+    }
+  }
 
   const handlePlannerStep = (
     record: Extract<AntigravityBrainRecord, { kind: 'planner-response' }>
   ): void => {
-    cycleRanStep = true
+    const hadUnhandledWake = tracker.notePlannerStep()
     for (const call of record.toolCalls) {
       if (call.name === 'send_message' && typeof call.args.Recipient === 'string') {
         children.retrackKnown(call.args.Recipient.trim())
       }
     }
     emitChildUpdates([], parentTasks.observePlannerCalls(record.toolCalls))
-    if (!wakeupTurn && unhandledSystemWake && hasCompletedPromptBudget()) {
+    const liveActive = replayFilter.isLiveWakeups() || isAgentTurnOpen()
+    if (
+      !wakeupTurn &&
+      !liveActive &&
+      hadUnhandledWake &&
+      tracker.hasCompletedPromptBudget(supersededByNewerUserInput, lane.openTurnId)
+    ) {
       emitChildUpdates([], [], record.stepIndex ?? 'p')
     }
-    const finishingPrompt =
-      !unhandledSystemWake &&
-      latestPromptChars !== null &&
-      transcriptCharsInCycle < latestPromptChars
-    if (!wakeupTurn || finishingPrompt) {
-      unhandledSystemWake = false
-      transcriptCharsInCycle += nonWhitespaceLength(record.content)
+    const finishingPrompt = tracker.isFinishingPrompt()
+    if (!finishingPrompt && liveActive) {
+      tracker.noteLiveStep(record)
+      settleLiveTurn(tracker.takeReadyLiveEnd(isLiveTurnOpen()))
       return
     }
-    const synthesized = replayFilter.synthesizeWakeupStep(record, wakeupTurn, () => nextSeq++)
+    if (!wakeupTurn || finishingPrompt) {
+      tracker.advancePromptChars(record.content)
+      return
+    }
+    const synthesized = replayFilter.synthesizeWakeupStep(record, wakeupTurn)
     pendingWakeupCalls.push(...synthesized.toolCallIds)
     for (const update of synthesized.updates) {
       emitWakeupUpdate(wakeupTurn, update)
@@ -193,16 +194,12 @@ export function observeAntigravityAcpBrainSession(input: {
       supersededByNewerUserInput = idx < lastUserInputIdx
       if (record.kind === 'user-input') {
         closeWakeupTurn('end_turn')
-        unhandledSystemWake = false
-        seenUserInput = true
-        cycleRanStep = false
-        transcriptCharsInCycle = 0
+        tracker.beginUserInput()
       } else if (record.kind === 'checkpoint') {
         // Manual `/compact` writes CHECKPOINT before any planner step; mid-turn auto-compaction does not.
-        if (!cycleRanStep) {
+        if (tracker.shouldCloseBeforeCheckpoint()) {
           closeWakeupTurn('end_turn')
-          unhandledSystemWake = false
-          cycleRanStep = true
+          tracker.beginCheckpoint()
         }
       } else if (record.kind === 'generic') {
         emitChildUpdates([], parentTasks.observeGeneric(record))
@@ -224,11 +221,18 @@ export function observeAntigravityAcpBrainSession(input: {
         const subagents = children.applySystemMessages(record.messages)
         const backgroundTasks = parentTasks.applySystemMessages(record.messages, input.resumed)
         // Inbox drains before a user turn's first step belong to that turn, not a reactive wakeup.
-        const canWake = cycleRanStep && record.messages.some((msg) => msg.wakesAgent)
-        if (canWake && hasCompletedPromptBudget() && !wakeupTurn) {
+        const canWake = tracker.canSystemWake(record.messages.some((msg) => msg.wakesAgent))
+        if (replayFilter.isLiveWakeups() || isAgentTurnOpen()) {
+          tracker.clearUnhandledWake()
+          emitChildUpdates(subagents, backgroundTasks)
+        } else if (
+          canWake &&
+          tracker.hasCompletedPromptBudget(supersededByNewerUserInput, lane.openTurnId) &&
+          !wakeupTurn
+        ) {
           emitChildUpdates(subagents, backgroundTasks, record.stepIndex ?? 's')
         } else {
-          unhandledSystemWake ||= canWake && !wakeupTurn && !supersededByNewerUserInput
+          tracker.armUnhandledWakeIf(canWake && !wakeupTurn && !supersededByNewerUserInput)
           emitChildUpdates(subagents, backgroundTasks)
         }
       } else if (record.kind === 'planner-response') {
@@ -241,7 +245,8 @@ export function observeAntigravityAcpBrainSession(input: {
 
   const hasOpenWork = (): boolean =>
     parentTasks.hasOpen() || lane.translator.subagents.hasOpen() || children.hasOpen()
-  const isIdle = (): boolean => !promptOpen && !lane.openTurnId && !wakeupTurn && !hasOpenWork()
+  const isIdle = (): boolean =>
+    !tracker.isPromptOpen() && !lane.openTurnId && !wakeupTurn && !hasOpenWork()
 
   const poller = createAntigravityTranscriptPoller({
     watchPaths: parentPaths,
@@ -252,6 +257,7 @@ export function observeAntigravityAcpBrainSession(input: {
       const childrenMoved = await children.pollChildren(readParentTranscript, (subagents) =>
         emitBrainTurn({ subagents })
       )
+      settleLiveTurn(tracker.pollSilentLiveEnd(parentMoved || childrenMoved, isLiveTurnOpen()))
       hadOpenSubagents = lane.translator.subagents.hasOpen()
       if (isIdle()) {
         graceTicks = Math.max(0, graceTicks - 1)
@@ -271,37 +277,18 @@ export function observeAntigravityAcpBrainSession(input: {
         return
       }
       parentTasks.observeAppliedEvents(events)
-      let relevant = false
-      for (const event of events) {
-        if (event.type === 'turn.open' && isAcpPromptTurnId(event.turn)) {
-          promptOpen = true
-          activePromptChars = 0
-          activePromptSawTraffic = false
-          resetWakeup()
-          relevant = true
-        } else if (event.type === 'turn.end' && (!event.turn || isAcpPromptTurnId(event.turn))) {
-          promptOpen = false
-          if (
-            !event.turn ||
-            activePromptSawTraffic ||
-            activePromptChars > 0 ||
-            (event.state === 'completed' && event.outcome === 'success')
-          ) {
-            // Compaction ends with an unkeyed turn.end while resetting transcriptCharsInCycle.
-            latestPromptChars = event.turn ? activePromptChars : 0
-          }
-          graceTicks = PROMPT_SETTLE_GRACE_TICKS
-          relevant = true
-        } else if (promptOpen && !wakeupTurn) {
-          activePromptSawTraffic ||= ['item.open', 'item.update', 'text.delta'].includes(event.type)
-          if (event.type === 'text.delta' && event.channel === 'assistant' && !event.producer) {
-            activePromptChars += nonWhitespaceLength(event.text)
-          }
-        }
+      const { relevant, promptClosed } = tracker.observeApplied(
+        events,
+        { isWakeupOpen: () => wakeupTurn !== null, isAgentTurnOpen },
+        resetWakeup
+      )
+      if (promptClosed) {
+        graceTicks = PROMPT_SETTLE_GRACE_TICKS
       }
       if (lane.openTurnId !== null && !isCurrentWakeupOpen()) {
         resetWakeup()
       }
+      settleLiveTurn(tracker.takeReadyLiveEnd(isLiveTurnOpen()))
       const hasOpen = lane.translator.subagents.hasOpen()
       if (relevant || (!hadOpenSubagents && hasOpen)) {
         poller.kick()

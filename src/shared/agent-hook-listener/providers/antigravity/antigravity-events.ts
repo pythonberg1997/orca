@@ -62,6 +62,10 @@ export function normalizeAntigravityEvent(
     clearAntigravityChildWork(state, paneKey)
   }
   const latestEntry = state.antigravityChildWorkByPaneKey.get(paneKey)
+  // The parent's busy Stop may land after its last subagent's; only other parent work reopens the run.
+  if (latestEntry && !(eventName === 'Stop' && isAntigravityStopStillBusy(hookPayload))) {
+    delete latestEntry.helpersIdleAt
+  }
   if (eventName === 'PreInvocation') {
     if (latestEntry) {
       delete latestEntry.completedTranscript
@@ -99,7 +103,11 @@ export function normalizeAntigravityEvent(
   } else if (childWork && isAntigravityStepEvent(eventName)) {
     childWork.parentStoppedAt = undefined
   }
-  const heldOpenByHelpers = stopStillBusy && childWork?.subagentParent !== undefined
+  const heldOpenByHelpers =
+    stopStillBusy &&
+    ((childWork?.subagents?.size ?? 0) > 0 ||
+      (childWork?.openSubagents?.size ?? 0) > 0 ||
+      childWork?.helpersIdleAt !== undefined)
   // A backgrounded command holds it the same way, as monitoring so silence can still bound it.
   const heldOpenByCommands =
     stopStillBusy && !heldOpenByHelpers && (childWork?.commands?.size ?? 0) > 0

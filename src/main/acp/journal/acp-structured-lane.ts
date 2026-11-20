@@ -23,10 +23,11 @@ import {
 import { matchesAcpRequestRow } from './acp-request-row-identity'
 import type { SessionNotification } from '../generated/acp-protocol.generated'
 import type { AcpTextDrop } from '../timeline/acp-turn-messages'
+import { AcpAgentTurnQuiet } from './acp-agent-turn-quiet'
 
 const BACKPRESSURE_RETRY_MS = 250
 
-export type AcpLaneObserver = {
+type AcpLaneObserver = {
   filterSessionNotification?: (notification: SessionNotification) => SessionNotification | null
   onApplied: (events: readonly ProviderTimelineEvent[]) => void
   onDisposed: () => void
@@ -63,6 +64,7 @@ export class AcpStructuredLane {
   private observer: AcpLaneObserver | null = null
   private readonly requestIdentity: ReturnType<typeof createLegacyProviderTimelineIdentityScheme>
   private retryTimer: ReturnType<typeof setTimeout> | null = null
+  readonly agentTurn = new AcpAgentTurnQuiet(this, () => this.deps.now?.() ?? Date.now())
   private failed = false
   private ended = false
   private disposed = false
@@ -125,16 +127,15 @@ export class AcpStructuredLane {
     if (this.failed || this.disposed) {
       return
     }
-    this.backlog.push(...events)
     const evidence = this.translator.subagents.drainEvidence()
-    if (evidence.length > 0) {
-      this.backlog.push({ type: 'subagent.work', evidence })
-    }
     const publish = this.translator.publication()
-    if (publish) {
-      this.backlog.push({ type: 'ownership.publish', publish })
-    }
+    this.backlog.push(
+      ...events,
+      ...(evidence.length > 0 ? [{ type: 'subagent.work' as const, evidence }] : []),
+      ...(publish ? [{ type: 'ownership.publish' as const, publish }] : [])
+    )
     this.drain()
+    this.agentTurn.restart()
     this.observer?.onApplied(events)
   }
 
@@ -185,6 +186,7 @@ export class AcpStructuredLane {
     this.observer = null
     this.translator.dispose()
     this.clearRetry()
+    this.agentTurn.dispose()
     this.backlog.length = 0
     this.assembler.dispose()
     this.notifyTurnWatchers()
@@ -246,9 +248,12 @@ export class AcpStructuredLane {
   }
 
   private publishChildWork(event: ProviderTimelineEvent): void {
-    const observedAt = this.deps.now?.() ?? Date.now()
-    const stops = this.deps.childStops?.()
-    const evidence = acpBackgroundTaskChildWork(event, observedAt, stops?.backgroundTasks === true)
+    const evidence = acpBackgroundTaskChildWork(
+      event,
+      this.deps.now?.() ?? Date.now(),
+      this.deps.childStops?.().backgroundTasks === true,
+      this.translator.isSyntheticBackgroundTask
+    )
     if (evidence.length > 0) {
       this.publishEvidence(evidence)
     }
@@ -263,6 +268,7 @@ export class AcpStructuredLane {
     this.observer?.onDisposed()
     this.observer = null
     this.translator.dispose()
+    this.agentTurn.dispose()
     this.backlog.length = 0
     this.notifyTurnWatchers()
     this.deps.onFailed(reason)
@@ -307,11 +313,7 @@ export class AcpStructuredLane {
   private publishSessionEnd = (): void =>
     this.publishEvidence([{ type: 'session-ended', observedAt: this.deps.now?.() ?? Date.now() }])
 
-  private notifyTurnWatchers(): void {
-    for (const check of this.turnWatchers) {
-      check()
-    }
-  }
+  private notifyTurnWatchers = (): void => this.turnWatchers.forEach((check) => check())
 
   private reportTextDrop(drop: AcpTextDrop): void {
     this.logger.warn('ACP text chunk rejected by its message stream', {
