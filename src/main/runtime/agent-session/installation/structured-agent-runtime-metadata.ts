@@ -107,15 +107,29 @@ function acpMetadata(spec: AcpLaunchSpec): StructuredAgentRuntimeMetadata {
       const host =
         spec.hostBackend &&
         (purpose === 'launch' || purpose === 'catalog') &&
-        !(bot && botAgentNeedsManagedRuntime(spec.agent)) &&
+        !(bot && botAgentNeedsManagedRuntime(spec.agent) && !spec.hostBackend.supportsBot) &&
         (permissionMode === undefined ||
           permissionMode === 'own' ||
           spec.hostBackend.spec.permissionModeConfig?.values[permissionMode] !== undefined)
           ? await hostLaunchEnvironment(spec.agent)
               .then((env) =>
-                (purpose === 'catalog'
-                  ? selectAcpHostAccountHomeForCatalog
-                  : selectAcpHostAccountHome)(spec, env, stateDirectory, hostSettings())
+                purpose === 'catalog'
+                  ? selectAcpHostAccountHomeForCatalog(
+                      spec,
+                      env,
+                      stateDirectory,
+                      hostSettings(),
+                      undefined,
+                      bot ? { bot } : undefined
+                    )
+                  : selectAcpHostAccountHome(
+                      spec,
+                      env,
+                      stateDirectory,
+                      hostSettings(),
+                      process.env,
+                      bot ? { bot } : undefined
+                    )
               )
               .catch(() => null)
           : null

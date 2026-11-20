@@ -79,21 +79,44 @@ export function selectAcpHostAccountHomeForCatalog(
   shellEnv: Readonly<Record<string, string>>,
   stateDirectory: string,
   settings: AcpHostBackendSettings,
-  now = Date.now()
+  now = Date.now(),
+  options?: { bot?: true }
 ): Promise<AgentSessionAccountHome | null> {
+  const cacheKey = options?.bot ? `${spec.agent}:bot` : spec.agent
   const key = JSON.stringify([
     stateDirectory,
     settings,
     spec.hostBackend?.selectionRevision?.(),
     shellEnv.PATH ?? shellEnv.Path,
-    shellEnv.HOME ?? shellEnv.USERPROFILE
+    shellEnv.HOME ?? shellEnv.USERPROFILE,
+    Boolean(options?.bot)
   ])
-  const remembered = catalogSelections.get(spec.agent)
+  const remembered = catalogSelections.get(cacheKey)
   if (remembered?.key === key && now - remembered.at < CATALOG_SELECTION_MS) {
     return remembered.home
   }
-  const home = selectAcpHostAccountHome(spec, shellEnv, stateDirectory, settings)
-  catalogSelections.set(spec.agent, { key, at: now, home })
+  const home = selectAcpHostAccountHome(
+    spec,
+    shellEnv,
+    stateDirectory,
+    settings,
+    process.env,
+    options
+  )
+  catalogSelections.set(cacheKey, { key, at: now, home })
+  // Do not pin a transient miss for 5 minutes; the host check has its own short failure backoff.
+  void home.then(
+    (resolved) => {
+      if (resolved === null && catalogSelections.get(cacheKey)?.home === home) {
+        catalogSelections.delete(cacheKey)
+      }
+    },
+    () => {
+      if (catalogSelections.get(cacheKey)?.home === home) {
+        catalogSelections.delete(cacheKey)
+      }
+    }
+  )
   return home
 }
 
@@ -103,7 +126,8 @@ export async function selectAcpHostAccountHome(
   shellEnv: Readonly<Record<string, string>>,
   stateDirectory: string,
   settings: AcpHostBackendSettings,
-  inherited: NodeJS.ProcessEnv = process.env
+  inherited: NodeJS.ProcessEnv = process.env,
+  options?: { bot?: true }
 ): Promise<AgentSessionAccountHome | null> {
   const backend = spec.hostBackend
   if (!backend) {
@@ -118,6 +142,14 @@ export async function selectAcpHostAccountHome(
   const homePath = env.HOME ?? env.USERPROFILE ?? homedir()
   const { command } = resolveAcpLaunchCommand(backend.spec, env, { homePath, dataDirectory: null })
   return isAbsolute(command)
-    ? backend.select({ command, env, envToDelete, homePath, stateDirectory, settings })
+    ? backend.select({
+        command,
+        env,
+        envToDelete,
+        homePath,
+        stateDirectory,
+        settings,
+        ...(options?.bot ? { bot: true as const } : {})
+      })
     : null
 }

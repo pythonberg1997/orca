@@ -51,13 +51,15 @@ function launch(
     instructions?: string | null
     launchEnv?: Record<string, string>
     spec?: AcpLaunchSpec
+    accountHome?: AgentSessionRecord['accountHome']
+    version?: string
   } = {}
 ) {
   const record: AgentSessionRecord = {
     ...agentSessionRecordFixture(),
     provider: agent,
     providerHandleChain: [],
-    accountHome: ACCOUNT_HOMES[agent]
+    accountHome: options.accountHome ?? ACCOUNT_HOMES[agent]
   }
   const resolve = createAcpStructuredLaunchResolver(options.spec ?? SPECS[agent], {
     store: { getRecord: () => record, pinLaunchDirectory: vi.fn() },
@@ -68,7 +70,9 @@ function launch(
     resolveCommand: (command) => `/resolved/${command}`,
     inheritedEnv: {},
     dataDirectory,
-    probeVersion: async () => ({ version: agent === 'omp' ? '17.2.9' : '1.18.35' }),
+    probeVersion: async () => ({
+      version: options.version ?? (agent === 'omp' ? '17.2.9' : '1.18.35')
+    }),
     ...(options.instructions === undefined
       ? {}
       : { resolveInstructions: async () => options.instructions ?? null })
@@ -95,6 +99,26 @@ describe('ACP launch: standing instructions', () => {
     expect(resolved.sessionMeta).toEqual({
       antigravity: { systemPrompt: { append: PREAMBLE } }
     })
+  })
+
+  it("appends them to the host agy server's system prompt when pinned to host agy", async () => {
+    const resolved = await launch('antigravity', {
+      instructions: PREAMBLE,
+      accountHome: { variable: 'GEMINI_HOME', path: '/home/user/.gemini' },
+      version: '1.5.13'
+    })
+    expect(resolved.command).toBe('/resolved/agy')
+    expect(resolved.sessionMeta).toEqual({
+      antigravity: { systemPrompt: { append: PREAMBLE } }
+    })
+    expect(resolved.sessionMetaOnReopen).toBe(true)
+    expect(
+      resolved.takesSessionMeta?.({
+        protocolVersion: 1,
+        agentCapabilities: { _meta: { antigravity: { systemPrompt: { append: true } } } }
+      })
+    ).toBe(true)
+    expect(resolved.takesSessionMeta?.({ protocolVersion: 1, agentCapabilities: {} })).toBe(false)
   })
 
   it("adds them to OpenCode's inline instructions after the user's own, keeping their settings", async () => {

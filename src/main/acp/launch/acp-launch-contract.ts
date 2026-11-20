@@ -115,6 +115,8 @@ export type AcpLaunchSpec = {
 export type AcpHostBackend = {
   spec: AcpLaunchSpec
   pins(home: AgentSessionAccountHome): boolean
+  /** Whether `select` can also serve bot chats (whose standing instructions it must check). */
+  supportsBot?: true
   /** The account home pinning a new chat to `spec`, or null when the host should not run it. */
   select(input: {
     command: string
@@ -125,6 +127,7 @@ export type AcpHostBackend = {
     stateDirectory: string
     /** The account type Orca's own Chat signs in with, saved on this host. */
     settings: AcpHostBackendSettings
+    bot?: true
   }): Promise<AgentSessionAccountHome | null>
   /** Changes whenever a sign-in that `select` weighs changes, so remembered answers are retired. */
   selectionRevision?(): number

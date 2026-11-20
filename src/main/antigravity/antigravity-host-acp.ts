@@ -3,7 +3,10 @@
 import { readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { InitializeResponse } from '../acp/generated/acp-protocol.generated'
+import { antigravityTakesSystemPrompt } from '../acp/launch/acp-instructions'
 import { AcpConnectionClosedError } from '../acp/transport/acp-errors'
+import { AgentModelCatalogProbeError } from '../native-chat/agent-model-catalog/agent-model-catalog-probe-runner'
+import { providerRequestTimeoutOf } from '../provider-process/provider-request-timeout'
 import {
   isLegacyAgentSessionAccountHome,
   type AgentSessionAccountHome
@@ -27,8 +30,8 @@ export const ANTIGRAVITY_HOST_ACP_MINIMUM_VERSION = '1.5.2'
 const AGY_HOME_FOLDER = '.gemini'
 /** Approves tools, not plans; the check launches with it, so a build without it stays managed. */
 export const AGY_SKIP_PERMISSIONS_FLAG = '--dangerously-skip-permissions'
-// agy.exe took 6-7s to list sessions while Orca started, and Windows has no managed fallback.
-const PROBE_TIMEOUT_MS = process.platform === 'win32' ? 15_000 : 5_000
+// agy's session/list scans saved conversations and can exceed 5s cold or with large histories.
+const PROBE_TIMEOUT_MS = 15_000
 const SUCCESS_RECHECK_MS = 30 * 60_000
 const FAILURE_RECHECK_MS = 10_000
 
@@ -66,12 +69,33 @@ type HostCheck = {
   identity: string
   answer: Promise<boolean>
   ready?: boolean
+  supportsSystemPromptAppend?: boolean
+  timedOut?: boolean
   retryAt?: number
   revalidating?: Promise<boolean>
 }
 const checks = new Map<string, HostCheck>()
 
 class IncompatibleHostAcp extends Error {}
+
+function isHostAcpProbeTimeout(error: unknown): boolean {
+  if (providerRequestTimeoutOf(error) !== undefined) {
+    return true
+  }
+  const candidates =
+    error instanceof Error && error.cause !== undefined ? [error, error.cause] : [error]
+  return candidates.some(
+    (candidate) =>
+      candidate instanceof AgentModelCatalogProbeError && candidate.reason === 'timeout'
+  )
+}
+
+function satisfiesHostAcpRequirements(
+  check: HostCheck,
+  requireSystemPromptAppend: boolean
+): boolean {
+  return !requireSystemPromptAppend || check.supportsSystemPromptAppend === true
+}
 
 function createHostAcpCheck(
   command: string,
@@ -81,42 +105,54 @@ function createHostAcpCheck(
   now: () => number
 ): HostCheck {
   let answered = false
+  let supportsSystemPromptAppend = false
   const check: HostCheck = {
     identity,
     retryAt: now() + SUCCESS_RECHECK_MS,
-    answer: initializeAntigravityAcp(
-      () => ({ command, args: ['acp', AGY_SKIP_PERMISSIONS_FLAG], env, envToDelete }),
-      PROBE_TIMEOUT_MS,
-      undefined,
-      async (connection, initialized, folder) => {
-        answered = true
-        if (!isCompatibleAntigravityHostAcp(initialized)) {
-          throw new IncompatibleHostAcp()
-        }
-        // A present keychain item does not prove agy can sign in silently; session requests
-        // answer "Authentication required" until it has. Unlike session/new, listing writes no
-        // conversation into agy's history.
-        await connection.listSessions({ cwd: folder })
-      }
-    ).then(
-      () => {
-        check.ready = true
-        check.retryAt = now() + SUCCESS_RECHECK_MS
-        return true
-      },
-      (error: unknown) => {
-        check.ready = false
-        // An exit before initialize answers is a binary rejecting the launch flag, not a lapse.
-        check.retryAt =
-          error instanceof IncompatibleHostAcp ||
-          (!answered && error instanceof AcpConnectionClosedError)
-            ? undefined
-            : now() + FAILURE_RECHECK_MS
-        return false
-      }
-    )
+    answer: Promise.resolve(false)
   }
+  check.answer = initializeAntigravityAcp(
+    () => ({ command, args: ['acp', AGY_SKIP_PERMISSIONS_FLAG], env, envToDelete }),
+    PROBE_TIMEOUT_MS,
+    undefined,
+    async (connection, initialized, folder) => {
+      answered = true
+      if (!isCompatibleAntigravityHostAcp(initialized)) {
+        throw new IncompatibleHostAcp()
+      }
+      supportsSystemPromptAppend = antigravityTakesSystemPrompt(initialized)
+      // A present keychain item does not prove agy can sign in silently; session requests
+      // answer "Authentication required" until it has. Unlike session/new, listing writes no
+      // conversation into agy's history.
+      await connection.listSessions({ cwd: folder })
+    }
+  ).then(
+    () => {
+      check.ready = true
+      check.supportsSystemPromptAppend = supportsSystemPromptAppend
+      check.timedOut = false
+      check.retryAt = now() + SUCCESS_RECHECK_MS
+      return true
+    },
+    (error: unknown) => {
+      check.ready = false
+      check.supportsSystemPromptAppend = false
+      check.timedOut = isHostAcpProbeTimeout(error)
+      // An exit before initialize answers is a binary rejecting the launch flag, not a lapse.
+      check.retryAt =
+        error instanceof IncompatibleHostAcp ||
+        (!answered && error instanceof AcpConnectionClosedError)
+          ? undefined
+          : now() + FAILURE_RECHECK_MS
+      return false
+    }
+  )
   return check
+}
+
+export type AntigravityHostAcpReadyOptions = {
+  now?: () => number
+  requireSystemPromptAppend?: boolean
 }
 
 /** Whether `command acp` initializes as a compatible server that serves session requests. An
@@ -126,8 +162,10 @@ export async function antigravityHostAcpReady(
   command: string,
   env: Record<string, string>,
   envToDelete: string[],
-  now = Date.now
+  options: AntigravityHostAcpReadyOptions = {}
 ): Promise<boolean> {
+  const now = options.now ?? Date.now
+  const requireSystemPromptAppend = options.requireSystemPromptAppend === true
   const stats = await stat(command).catch(() => null)
   if (!stats?.isFile()) {
     return false
@@ -136,7 +174,9 @@ export async function antigravityHostAcpReady(
   const cached = checks.get(command)
   if (cached?.identity === identity) {
     if (cached.retryAt === undefined || now() < cached.retryAt) {
-      return cached.answer
+      return (
+        (await cached.answer) && satisfiesHostAcpRequirements(cached, requireSystemPromptAppend)
+      )
     }
     // Revalidate previously proven servers in the background so session opens do not stall.
     if (cached.ready === true) {
@@ -144,18 +184,23 @@ export async function antigravityHostAcpReady(
         const next = createHostAcpCheck(command, identity, env, envToDelete, now)
         cached.revalidating = next.answer.then((ready) => {
           if (checks.get(command) === cached) {
-            checks.set(command, next)
+            if (ready || !next.timedOut) {
+              checks.set(command, next)
+            } else {
+              // Keep a proven server available across a transient revalidation timeout.
+              cached.retryAt = now() + FAILURE_RECHECK_MS
+            }
           }
           cached.revalidating = undefined
           return ready
         })
       }
-      return true
+      return satisfiesHostAcpRequirements(cached, requireSystemPromptAppend)
     }
   }
   const check = createHostAcpCheck(command, identity, env, envToDelete, now)
   checks.set(command, check)
-  return check.answer
+  return (await check.answer) && satisfiesHostAcpRequirements(check, requireSystemPromptAppend)
 }
 
 /** Whether agy's settings select an API-key model provider; host chats drop inherited keys. */

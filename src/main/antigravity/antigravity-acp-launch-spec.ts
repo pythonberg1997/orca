@@ -191,9 +191,10 @@ export const ANTIGRAVITY_LAUNCH_SPEC = {
   hostBackend: {
     spec: ANTIGRAVITY_HOST_LAUNCH_SPEC,
     pins: isAntigravityHostAccountHome,
+    supportsBot: true,
     // Someone signed in to Orca's own Chat keeps it; the host's agy needs a sign-in that serves
     // sessions, not an API-key provider whose key the host launch drops.
-    select: async ({ command, env, envToDelete, homePath, stateDirectory, settings }) =>
+    select: async ({ command, env, envToDelete, homePath, stateDirectory, settings, bot }) =>
       savedChatAuthIsPersonal(settings.antigravityChatAuth) &&
       antigravityChatSignIn.get().value.auth !== 'signedIn' &&
       !(await hasManagedAntigravityChatSignIn(
@@ -201,7 +202,12 @@ export const ANTIGRAVITY_LAUNCH_SPEC = {
       )) &&
       !(await agyUsesApiKey(homePath)) &&
       (await hasAgyCredential(homePath)) &&
-      (await antigravityHostAcpReady(command, env, envToDelete))
+      (await antigravityHostAcpReady(
+        command,
+        env,
+        envToDelete,
+        bot ? { requireSystemPromptAppend: true } : undefined
+      ))
         ? antigravityHostAccountHome(homePath)
         : null,
     selectionRevision: () => antigravityChatSignIn.get().revision
