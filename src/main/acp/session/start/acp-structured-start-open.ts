@@ -8,6 +8,24 @@ import { acpStartupFailure } from '../children/acp-structured-child'
 import type { AcpStructuredChildren } from '../children/acp-structured-child-lifecycle'
 import { acpStartFailure } from './acp-startup-outcome'
 import { withAcpStartupDiagnostic } from './acp-startup-diagnostic'
+import { initializeAcpStructuredSession } from './acp-structured-handshake'
+
+/** Runs the open handshake and attaches any provider-specific session observer once a lane exists. */
+export async function initializeAndObserveAcpSession(
+  input: Parameters<typeof initializeAcpStructuredSession>[0]
+): ReturnType<typeof initializeAcpStructuredSession> {
+  const opened = await initializeAcpStructuredSession(input)
+  if (input.child.lane && opened.link) {
+    input.launch.spec.observeSession?.({
+      env: input.launch.env,
+      providerSessionId: opened.link.handle.nativeId,
+      resumed: opened.link.origin !== 'created',
+      lane: input.child.lane,
+      now: input.deps.now ?? Date.now
+    })
+  }
+  return opened
+}
 
 /** A start's open answers with the agent's verdict; a child that already ended answers with how
  *  it ended, and an answer its own exit followed is still worded as that exit. */

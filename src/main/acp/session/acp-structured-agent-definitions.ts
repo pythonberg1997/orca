@@ -4,6 +4,10 @@ import { acpLaunchSpecForAccount } from '../launch/acp-launch-command'
 import type { AcpLaunchSpec } from '../launch/acp-launch-contract'
 import { TUI_AGENT_DISPLAY_NAMES } from '../../../shared/agent-launch/catalog/tui-agent-display-names'
 import { isTuiAgent } from '../../../shared/agent-launch/catalog/tui-agent-config'
+import {
+  isManagedAgentCli,
+  managedAgentCli
+} from '../../managed-agent-cli/managed-agent-cli-registry'
 
 export function acpAgentName(agent: string): string {
   return isTuiAgent(agent) ? TUI_AGENT_DISPLAY_NAMES[agent] : agent
@@ -40,9 +44,9 @@ function acpCapabilities(
 }
 
 export function acpStructuredAgentDefinition(spec: AcpLaunchSpec): StructuredAgentDefinition {
-  const { managedRuntime, hostBackend } = spec
+  const { agent, managedRuntime, hostBackend } = spec
   return {
-    agent: spec.agent,
+    agent,
     handleTransport: ACP_HANDLE_TRANSPORT,
     ...spec.account.pin,
     capabilities: acpCapabilities(spec, {
@@ -55,6 +59,7 @@ export function acpStructuredAgentDefinition(spec: AcpLaunchSpec): StructuredAge
       capabilitiesForAccount: (home) => acpCapabilities(spec, acpLaunchSpecForAccount(spec, home))
     }),
     ...(managedRuntime && { managedRuntime: () => managedRuntime.pin() !== null }),
+    ...(isManagedAgentCli(agent) && { managedRuntime: () => managedAgentCli(agent).available() }),
     ...(hostBackend && { runsHostProgram: (home) => hostBackend.pins(home) }),
     restingOptions: {
       acceptsKey: (key) =>

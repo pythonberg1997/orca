@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { claudeStreamJsonExitError } from '../sdk-transport/claude-stream-json-exit-error'
-import { CLAUDE_PLUGIN_DIR_FLAG, createClaudeCliFlagSupport } from './claude-cli-flag-support'
+import {
+  CLAUDE_MCP_CONFIG_FLAG,
+  CLAUDE_PLUGIN_DIR_FLAG,
+  CLAUDE_PLUGIN_DIRS_ENV,
+  createClaudeCliFlagSupport
+} from './claude-cli-flag-support'
 
 const launch = { command: '/bin/claude', cwd: '/repo', env: {} }
 const SIDELOAD_REFUSAL =
@@ -20,17 +25,35 @@ function exitWith(stderr: string) {
 }
 
 describe('claudeCliFlagSupport.observeExit', () => {
-  it.each([
-    "error: unknown option '--plugin-dir'",
-    `--plugin-dir is ${SIDELOAD_REFUSAL}`,
-    `--plugin-dir, --agents, plugins (initialize request) are ${SIDELOAD_REFUSAL}`
-  ])('stops offering a flag the CLI refused at startup: %s', async (stderr) => {
+  it('stops offering the flag when the managed-settings refusal names several items', async () => {
     const support = flagSupport()
     expect(await support.check(CLAUDE_PLUGIN_DIR_FLAG, launch)).toBe('supported')
 
-    support.observeExit(launch, exitWith(stderr))
+    support.observeExit(
+      launch,
+      exitWith(`--plugin-dir, --agents, plugins (initialize request) are ${SIDELOAD_REFUSAL}`)
+    )
 
     await expect.poll(() => support.check(CLAUDE_PLUGIN_DIR_FLAG, launch)).toBe('unsupported')
+  })
+
+  it('stops passing the plugin folders variable and MCP config once managed settings refuse them', async () => {
+    const support = flagSupport()
+    expect(await support.check(CLAUDE_PLUGIN_DIRS_ENV, launch)).toBe('supported')
+    expect(await support.check(CLAUDE_MCP_CONFIG_FLAG, launch)).toBe('supported')
+
+    // Claude 2.1.328 words: the variable is named bare, after any refused flags, then a hint.
+    support.observeExit(
+      launch,
+      exitWith(
+        `Error: CLAUDE_CODE_PLUGIN_DIRS is ${SIDELOAD_REFUSAL} Unset CLAUDE_CODE_PLUGIN_DIRS (in the environment, or in the settings \`env\` block that sets it) to run without those folders.`
+      )
+    )
+    support.observeExit(launch, exitWith(`Error: --mcp-config is ${SIDELOAD_REFUSAL}`))
+
+    await expect.poll(() => support.check(CLAUDE_PLUGIN_DIRS_ENV, launch)).toBe('unsupported')
+    await expect.poll(() => support.check(CLAUDE_MCP_CONFIG_FLAG, launch)).toBe('unsupported')
+    expect(await support.check(CLAUDE_PLUGIN_DIR_FLAG, launch)).toBe('supported')
   })
 
   it('keeps a managed-settings refusal to the account whose policy refused it', async () => {

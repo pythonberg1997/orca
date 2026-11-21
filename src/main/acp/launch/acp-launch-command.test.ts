@@ -24,14 +24,13 @@ function makeHostEnv(): { binDir: string; env: Record<string, string> } {
 }
 
 describe('selectAcpHostAccountHomeForCatalog', () => {
-  it('does not cache null host results and keeps bot and normal selections separate', async () => {
+  it('does not cache null host results across subsequent catalog reads', async () => {
     const baseSpec = acpLaunchSpecFor('antigravity')!
     const hostHome = { variable: 'GEMINI_HOME', path: '/Users/dev/.gemini' }
     const select = vi
       .fn<NonNullable<AcpLaunchSpec['hostBackend']>['select']>()
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(hostHome)
-      .mockResolvedValueOnce(null)
     const spec: AcpLaunchSpec = {
       ...baseSpec,
       hostBackend: {
@@ -47,12 +46,11 @@ describe('selectAcpHostAccountHomeForCatalog', () => {
     await expect(
       selectAcpHostAccountHomeForCatalog(spec, env, '/state', {}, 1_100)
     ).resolves.toEqual(hostHome)
+    // A resolved host home is reused within the catalog cache window.
     await expect(
-      selectAcpHostAccountHomeForCatalog(spec, env, '/state', {}, 1_200, { bot: true })
-    ).resolves.toBe(null)
+      selectAcpHostAccountHomeForCatalog(spec, env, '/state', {}, 1_200)
+    ).resolves.toEqual(hostHome)
 
-    expect(select).toHaveBeenCalledTimes(3)
-    expect(select.mock.calls[0]?.[0].bot).toBeUndefined()
-    expect(select.mock.calls[2]?.[0].bot).toBe(true)
+    expect(select).toHaveBeenCalledTimes(2)
   })
 })

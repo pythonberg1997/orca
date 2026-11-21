@@ -1,10 +1,22 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { InitializeResponse } from '../acp/generated/acp-protocol.generated'
+import { AcpAgentError } from '../acp/transport/acp-errors'
+import {
+  createAcpModelCatalogProbe,
+  type AcpModelCatalogProbeDeps
+} from '../acp/discovery/acp-model-catalog-probe'
+import { resolveAcpLaunchInvocation } from '../acp/launch/acp-structured-launch-resolution'
 import { AgentModelCatalogProbeError } from '../native-chat/agent-model-catalog/agent-model-catalog-probe-runner'
-import { antigravityHostAcpReady, hasAgyCredential } from './antigravity-host-acp'
+import { ANTIGRAVITY_LAUNCH_SPEC } from './antigravity-acp-launch-spec'
+import {
+  antigravityHostAccountHome,
+  checkAntigravityHostAcp,
+  forgetAntigravityHostAcpChecks,
+  isCompatibleAntigravityHostAcp
+} from './antigravity-host-acp'
 
 const probe = vi.hoisted(() => ({
   initializeAntigravityAcp: vi.fn()
@@ -17,6 +29,8 @@ vi.mock('./antigravity-acp-runtime-probe', () => ({
 const homes: string[] = []
 afterEach(() => {
   probe.initializeAntigravityAcp.mockReset()
+  forgetAntigravityHostAcpChecks()
+  vi.restoreAllMocks()
   homes.splice(0).forEach((home) => rmSync(home, { recursive: true, force: true }))
 })
 
@@ -28,64 +42,82 @@ function makeFakeBinary(name = 'agy'): string {
   return file
 }
 
-function compatibleInitialize(supportsSystemPromptAppend: boolean): InitializeResponse {
+// agy 1.5.13's own initialize answer, trimmed to what the check reads.
+function agyInitialize(meta: Record<string, unknown>): InitializeResponse {
   return {
     protocolVersion: 1,
     agentInfo: { name: 'Antigravity ACP Server', version: '1.5.13' },
     agentCapabilities: {
       loadSession: true,
       sessionCapabilities: { resume: {}, list: {} },
-      ...(supportsSystemPromptAppend
-        ? { _meta: { antigravity: { systemPrompt: { append: true } } } }
-        : {})
+      _meta: meta
     }
   }
 }
 
-describe('hasAgyCredential', () => {
-  it('leaves a keyring-fallback marker to the ACP readiness probe', async () => {
-    const home = mkdtempSync(join(tmpdir(), 'agy-home-'))
-    homes.push(home)
-    const marker = join(home, '.gemini/antigravity-cli/cache/antigravity-keyring-unavailable')
-    mkdirSync(dirname(marker), { recursive: true })
-    writeFileSync(marker, '1794977777')
-    await expect(hasAgyCredential(home)).resolves.toBe(true)
+describe('isCompatibleAntigravityHostAcp', () => {
+  it("leaves an agy that can't append to its system prompt to Orca's own server", () => {
+    expect(
+      isCompatibleAntigravityHostAcp(
+        agyInitialize({ antigravity: { tier: true, systemPrompt: { append: true } } })
+      )
+    ).toBe(true)
+    expect(isCompatibleAntigravityHostAcp(agyInitialize({ antigravity: { tier: true } }))).toBe(
+      false
+    )
   })
 })
 
-describe('antigravityHostAcpReady', () => {
-  it('requires systemPrompt.append for bot checks while allowing normal chats on older servers', async () => {
-    const modernBin = makeFakeBinary('agy-modern')
-    const legacyBin = makeFakeBinary('agy-legacy')
-    probe.initializeAntigravityAcp.mockImplementation(
-      async (
-        launch: (folder: string) => { command: string },
-        _timeoutMs: number,
-        _signal: AbortSignal | undefined,
-        check?: (
-          connection: { listSessions: () => Promise<{ sessions: [] }> },
-          initialized: InitializeResponse,
-          folder: string
-        ) => Promise<void>
-      ) => {
-        const initialized = compatibleInitialize(launch('/tmp').command === modernBin)
-        await check?.({ listSessions: async () => ({ sessions: [] }) }, initialized, '/tmp')
-        return initialized
+describe('ANTIGRAVITY_LAUNCH_SPEC host backend environment', () => {
+  it('scrubs alternate-case auto-update flags on Windows so they cannot shadow the uppercase entry', async () => {
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32')
+    const home = mkdtempSync(join(tmpdir(), 'agy-host-win-env-'))
+    homes.push(home)
+    const invocation = await resolveAcpLaunchInvocation(
+      ANTIGRAVITY_LAUNCH_SPEC,
+      antigravityHostAccountHome(home),
+      {
+        resolveEnvironment: async () => ({ PATH: '', agy_cli_disable_auto_update: 'false' }),
+        resolveCommand: (command) => join(home, command),
+        inheritedEnv: { agy_cli_disable_auto_update: 'false' },
+        homePath: home,
+        dataDirectory: home
       }
     )
-
-    await expect(antigravityHostAcpReady(modernBin, {}, [])).resolves.toBe(true)
-    await expect(
-      antigravityHostAcpReady(modernBin, {}, [], { requireSystemPromptAppend: true })
-    ).resolves.toBe(true)
-
-    await expect(antigravityHostAcpReady(legacyBin, {}, [])).resolves.toBe(true)
-    await expect(
-      antigravityHostAcpReady(legacyBin, {}, [], { requireSystemPromptAppend: true })
-    ).resolves.toBe(false)
-    expect(probe.initializeAntigravityAcp).toHaveBeenCalledTimes(2)
+    expect(invocation.env.AGY_CLI_DISABLE_AUTO_UPDATE).toBe('true')
+    expect(invocation.env.agy_cli_disable_auto_update).toBeUndefined()
+    expect(invocation.envToDelete).toContain('agy_cli_disable_auto_update')
+    expect(invocation.envToDelete).not.toContain('AGY_CLI_DISABLE_AUTO_UPDATE')
   })
 
+  it('overrides inherited auto-updates when listing host models', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'agy-host-models-'))
+    homes.push(home)
+    const runListing = vi.fn<NonNullable<AcpModelCatalogProbeDeps['runListing']>>(
+      async () => 'gemini-4-neon-high\tGemini 4 Neon (High)\n'
+    )
+    const probeModels = createAcpModelCatalogProbe(ANTIGRAVITY_LAUNCH_SPEC, {
+      resolveEnvironment: async () => ({ PATH: '', AGY_CLI_DISABLE_AUTO_UPDATE: 'false' }),
+      resolveCommand: (command) => join(home, command),
+      probeVersion: async () => ({ version: '1.5.12' }),
+      inheritedEnv: { AGY_CLI_DISABLE_AUTO_UPDATE: 'false' },
+      homePath: home,
+      dataDirectory: home,
+      runListing
+    })
+    const result = await probeModels(antigravityHostAccountHome(home), { workspacePath: home })
+    expect(result.models).toHaveLength(1)
+    expect(runListing).toHaveBeenCalledWith(
+      expect.objectContaining({
+        args: ['models'],
+        env: expect.objectContaining({ AGY_CLI_DISABLE_AUTO_UPDATE: 'true' })
+      }),
+      expect.anything()
+    )
+  })
+})
+
+describe('checkAntigravityHostAcp', () => {
   it('uses a 15s probe budget and keeps a proven server ready across a revalidation timeout', async () => {
     const bin = makeFakeBinary('agy-reval')
     let now = 1_000_000
@@ -105,29 +137,65 @@ describe('antigravityHostAcpReady', () => {
         expect(timeoutMs).toBe(15_000)
         attempt += 1
         if (attempt === 1) {
-          const initialized = compatibleInitialize(true)
+          const initialized = agyInitialize({
+            antigravity: { tier: true, systemPrompt: { append: true } }
+          })
           await check?.({ listSessions: async () => ({ sessions: [] }) }, initialized, '/tmp')
           return initialized
         }
         if (attempt === 2) {
           throw new AgentModelCatalogProbeError('Antigravity listing timed out', 'timeout')
         }
-        throw new Error('Authentication required')
+        throw new AcpAgentError(-32000, 'Authentication required')
       }
     )
 
-    await expect(antigravityHostAcpReady(bin, {}, [], { now: clock })).resolves.toBe(true)
+    await expect(checkAntigravityHostAcp(bin, {}, [], clock)).resolves.toBe('ready')
 
-    // Past the 30m TTL: background revalidation hits a transient timeout but keeps readiness.
-    now += 31 * 60_000
-    await expect(antigravityHostAcpReady(bin, {}, [], { now: clock })).resolves.toBe(true)
+    // Past the 5m TTL: background revalidation hits a transient timeout but keeps readiness.
+    now += 6 * 60_000
+    await expect(checkAntigravityHostAcp(bin, {}, [], clock)).resolves.toBe('ready')
     await vi.waitFor(() => expect(attempt).toBe(2))
-    await expect(antigravityHostAcpReady(bin, {}, [], { now: clock })).resolves.toBe(true)
+    await expect(checkAntigravityHostAcp(bin, {}, [], clock)).resolves.toBe('ready')
 
-    // After the retry backoff, a real auth failure flips the cached server to not ready.
+    // After the retry backoff, a real auth failure flips the cached server to signedOut.
     now += 11_000
-    await expect(antigravityHostAcpReady(bin, {}, [], { now: clock })).resolves.toBe(true)
+    await expect(checkAntigravityHostAcp(bin, {}, [], clock)).resolves.toBe('ready')
     await vi.waitFor(() => expect(attempt).toBe(3))
-    await expect(antigravityHostAcpReady(bin, {}, [], { now: clock })).resolves.toBe(false)
+    await expect(checkAntigravityHostAcp(bin, {}, [], clock)).resolves.toBe('signedOut')
+  })
+
+  it('rechecks an initial unanswered probe after 10s instead of caching it for 5 minutes', async () => {
+    const bin = makeFakeBinary('agy-recover')
+    let now = 1_000_000
+    const clock = () => now
+    let attempt = 0
+    probe.initializeAntigravityAcp.mockImplementation(
+      async (
+        _launch: (folder: string) => { command: string },
+        _timeoutMs: number,
+        _signal: AbortSignal | undefined,
+        check?: (
+          connection: { listSessions: () => Promise<{ sessions: [] }> },
+          initialized: InitializeResponse,
+          folder: string
+        ) => Promise<void>
+      ) => {
+        attempt += 1
+        if (attempt === 1) {
+          throw new AgentModelCatalogProbeError('Antigravity listing timed out', 'timeout')
+        }
+        const initialized = agyInitialize({
+          antigravity: { tier: true, systemPrompt: { append: true } }
+        })
+        await check?.({ listSessions: async () => ({ sessions: [] }) }, initialized, '/tmp')
+        return initialized
+      }
+    )
+
+    await expect(checkAntigravityHostAcp(bin, {}, [], clock)).resolves.toBe('unanswered')
+    now += 11_000
+    await expect(checkAntigravityHostAcp(bin, {}, [], clock)).resolves.toBe('ready')
+    expect(attempt).toBe(2)
   })
 })
