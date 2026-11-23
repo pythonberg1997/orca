@@ -1,6 +1,6 @@
 // Track evidence for this provider child; the host owns durable subagent records.
 
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import type { AgentChildWorkOutcome } from '../../../shared/agent-status/child-work/agent-status-child-work'
 import type {
   AgentChildWorkEvidence,
@@ -20,6 +20,8 @@ import type { AcpSubagentUpdate } from '../acp-dialects/acp-dialect'
 type KnownSubagent = {
   /** Pin replies to the spawning turn. */
   placement: ProviderTimelineJoin
+  /** ACP names no run, and the host keys a run's saved reply by its handle, so each started run gets its own. */
+  run?: string
   replyDigest?: string
   /** Preserve the first terminal state; only completed runs can publish replies. */
   ended?: NativeChatSubagentState
@@ -129,7 +131,7 @@ export class AcpSubagents {
         for (const [id, subagent] of this.known) {
           if (subagent.ended === undefined) {
             subagent.ended = rawUpdate.state
-            this.pending.push(subagentEvidence({ id, state: rawUpdate.state }, at))
+            this.pending.push(subagentEvidence({ id, state: rawUpdate.state }, subagent.run, at))
           }
         }
         for (const providerId of this.pendingSpawnIds) {
@@ -167,14 +169,16 @@ export class AcpSubagents {
         }
       }
       this.known.set(update.id, subagent)
-      if (update.restart && subagent.ended !== undefined) {
+      // Only a provider start proves a new run; a late report after reattaching must not reopen one.
+      if (update.restart && (subagent.run === undefined || subagent.ended !== undefined)) {
+        subagent.run = `acp-child-run:${randomUUID()}`
         subagent.ended = undefined
         subagent.replyDigest = undefined
       }
       const ending = update.state !== undefined && acpSubagentOutcome(update.state) !== undefined
       // Late live reports must not resurrect an ended run after the host retires its record.
       if (ending || subagent.ended === undefined) {
-        this.pending.push(subagentEvidence(update, at))
+        this.pending.push(subagentEvidence(update, subagent.run, at))
       }
       if (ending) {
         subagent.ended ??= update.state
@@ -215,9 +219,13 @@ export class AcpSubagents {
   }
 }
 
-// Subagents outlive their spawning prompt and have no provider run identity.
-function subagentEvidence(update: AcpSubagentUpdate, observedAt: number): AgentChildWorkEvidence {
-  const handle = subagentHandle(update.id)
+// Subagents outlive their spawning prompt.
+function subagentEvidence(
+  update: AcpSubagentUpdate,
+  run: string | undefined,
+  observedAt: number
+): AgentChildWorkEvidence {
+  const handle = subagentHandle(update.id, run)
   const outcome = update.state === undefined ? undefined : acpSubagentOutcome(update.state)
   if (outcome === undefined) {
     return {
@@ -237,16 +245,18 @@ function subagentEvidence(update: AcpSubagentUpdate, observedAt: number): AgentC
       ...(update.restart ? { restart: true } : {})
     }
   }
+  const lastMessage = update.error || update.reply
   return {
     type: 'ended',
     observedAt,
     handle,
     outcome,
+    ...(lastMessage ? { lastMessage } : {}),
     ...(update.tokens !== undefined ? { totalTokens: update.tokens } : {})
   }
 }
 
-function subagentHandle(id: string): AgentChildWorkEvidenceHandle {
+function subagentHandle(id: string, run?: string): AgentChildWorkEvidenceHandle {
   const bounded =
     id.length <= MAX_SUBAGENT_FIELD_CHARS
       ? id
@@ -255,8 +265,10 @@ function subagentHandle(id: string): AgentChildWorkEvidenceHandle {
     idKind: 'task_id',
     id: bounded,
     // Hash the smaller invocation fence while retaining the full handle.
-    ...(bounded.length > AGENT_CHILD_WORK_ID_MAX_LENGTH
-      ? { runId: `acp-child:${createHash('sha256').update(bounded).digest('hex')}` }
-      : {})
+    ...(run !== undefined
+      ? { runId: run }
+      : bounded.length > AGENT_CHILD_WORK_ID_MAX_LENGTH
+        ? { runId: `acp-child:${createHash('sha256').update(bounded).digest('hex')}` }
+        : {})
   }
 }
