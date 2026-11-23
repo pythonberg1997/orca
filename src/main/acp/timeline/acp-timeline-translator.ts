@@ -50,7 +50,7 @@ export class AcpTimelineTranslator {
   private readonly ownership = new AcpTimelineOwnership()
   private readonly started = new BoundedMap<string, true>({ maxEntries: 128 })
   readonly elicitations = new AcpUrlElicitations()
-  private readonly failures: AcpTurnFailures
+  readonly failures: AcpTurnFailures
   private loading = false
   private readonly context = new AcpContextTimeline()
   private readonly threadGoal = new AcpThreadGoalTimeline()
