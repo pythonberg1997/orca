@@ -68,7 +68,8 @@ export function acpStructuredAgentDefinition(spec: AcpLaunchSpec): StructuredAge
         (spec.dialect.interactionModes !== undefined && key === 'interactionMode'),
       // Populate catalogs from live agents.
       fallbackModels: () => null,
-      effortDefaultsToModel: false
+      effortDefaultsToModel: false,
+      listedSelection: spec.dialect.listedSelection
     }
   }
 }

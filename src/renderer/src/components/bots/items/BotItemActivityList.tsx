@@ -21,6 +21,7 @@ import {
 } from '../../../../../shared/bots/bot-items'
 import {
   botItemActivity,
+  botItemLiveAskKey,
   botItemWaitEntryKey,
   botItemWorkerStopReason,
   type BotItemActivityEntry
@@ -267,6 +268,7 @@ export function BotItemActivityList({
   const t = useTranslate()
   const entries = botItemActivity(item, events)
   const waitKey = botItemWaitEntryKey(item, entries)
+  const liveAskId = botItemLiveAskKey(entries)
   const list = useRef<HTMLDivElement | null>(null)
   // A reply's quote leads to its question, focused so Tab goes on from there.
   const jump = useCallback(
@@ -300,6 +302,7 @@ export function BotItemActivityList({
                     : entry
                 }
                 onJump={jump}
+                liveAskId={liveAskId}
                 quickReplies={quickReplies}
               />
             )

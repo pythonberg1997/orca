@@ -8,6 +8,7 @@ import {
 } from '../requests/acp-form-elicitation'
 import { acpPermissionPresentation } from '../requests/acp-timeline-requests'
 import type { ModelInfo, ToolCallUpdate } from '../generated/acp-protocol.generated'
+import type { StructuredAgentListedSelection } from '../../native-chat/agent-session-wire/providers/structured-agent-definition'
 import {
   pendingAcpResolution,
   type AcpAdvertisedEfforts,
@@ -231,6 +232,22 @@ export function antigravityModelChoices(
   return [...choices].map(([id, label]) => ({ id, label }))
 }
 
+/** A level id as the family row and level a chat lists in its place; null when the listing names
+ *  the id itself or the family does not offer that level and the requested effort. */
+export const antigravityListedFamilySelection: StructuredAgentListedSelection = (
+  options,
+  listed
+) => {
+  const [, family, level] = ANTIGRAVITY_LEVEL_SUFFIX.exec(options.model ?? '') ?? []
+  const offered = listed.find((model) => model.id === family)?.efforts.map(({ value }) => value)
+  const effort = options.effort ?? level
+  return offered?.includes(level) &&
+    offered.includes(effort) &&
+    !listed.some((model) => model.id === options.model)
+    ? { ...options, model: family, effort }
+    : null
+}
+
 export const ANTIGRAVITY_ACP_DIALECT: AcpDialect = {
   // With forms, ask_question carries a write-in field per question; permissions cannot carry text.
   clientCapabilities: { elicitation: { form: {} } },
@@ -270,7 +287,8 @@ export const ANTIGRAVITY_ACP_DIALECT: AcpDialect = {
   // Avoid using the full command line as the tool name.
   toolName: (update) => (update.kind === 'execute' ? 'execute' : undefined),
   // Logout would clear the account shared by every Antigravity chat on this host.
-  withheldCommands: ['logout']
+  withheldCommands: ['logout'],
+  listedSelection: antigravityListedFamilySelection
 }
 
 // agy answers "Authentication required" alone; on Orca's home that is a key it rejects, so the
