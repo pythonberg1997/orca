@@ -25,10 +25,6 @@ const SERVER_SKILL_FOLDERS: readonly SkillFolder[] = [
     ['config', 'skills']
   ],
   [
-    ['config', 'plugins'],
-    ['config', 'plugins']
-  ],
-  [
     ['antigravity-cli', 'skills'],
     ['antigravity-cli', 'skills']
   ]

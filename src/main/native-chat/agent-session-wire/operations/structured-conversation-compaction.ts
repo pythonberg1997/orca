@@ -189,13 +189,10 @@ function acceptUnderSerialize(
           (await conversationCommandBlocked(
             ctx,
             record,
-            compactionChildWork(
-              ctx.agents.capabilities(record.provider, record.accountHome),
-              () => ({
-                views: context.readChildWork(ctx.sessionId),
-                open: context.childWorkOpen(ctx.sessionId)
-              })
-            ),
+            compactionChildWork(ctx.agents.capabilities(record.provider), () => ({
+              views: context.readChildWork(ctx.sessionId),
+              open: context.childWorkOpen(ctx.sessionId)
+            })),
             context.sessions.get(ctx.sessionId)?.child ? undefined : 'at-rest'
           ))
         const blocked =

@@ -128,8 +128,7 @@ export async function readStructuredAgentSessionOptions(
   // Earlier reads may have closed/reopened the handle.
   const session = await context.conversation(sessionId)
   const agent = session.params.provider
-  const record = store.getConversation(sessionId)
-  const capabilities = agents.capabilities(agent, session.child?.accountHome ?? record?.accountHome)
+  const capabilities = agents.capabilities(agent)
   const restingOptions = await atRest()
   const recovery = await readStructuredSessionRecovery(session, context, sessionId)
   const [floor, goalSource, contextUsage] = await Promise.all([
@@ -150,6 +149,7 @@ export async function readStructuredAgentSessionOptions(
     }
   }
   const resting = live ? restingOptions : null
+  const record = store.getConversation(sessionId)
   const permissionMode = record
     ? structuredAgentSessionImmediatePermission(context.deps, record)
     : null

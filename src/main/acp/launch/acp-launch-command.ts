@@ -106,19 +106,6 @@ export function selectAcpHostAccountHomeForCatalog(
   }
   const home = selectAcpHostAccountHome(spec, shellEnv, stateDirectory, settings)
   catalogSelections.set(spec.agent, { key, at: now, home })
-  // Do not pin a transient miss for 5 minutes; the host check has its own short failure backoff.
-  void home.then(
-    (resolved) => {
-      if (resolved === null && catalogSelections.get(spec.agent)?.home === home) {
-        catalogSelections.delete(spec.agent)
-      }
-    },
-    () => {
-      if (catalogSelections.get(spec.agent)?.home === home) {
-        catalogSelections.delete(spec.agent)
-      }
-    }
-  )
   return home
 }
 
