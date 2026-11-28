@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { lazyZodSchema } from '../../../shared/schema/lazy-zod-schema'
 import type { AgentJournalToolCallItem } from '../../../shared/agent-session/journal/agent-session-journal-types'
 import { isRecord } from '../../../shared/agent-status/child-work/agent-status-child-work-value-guards'
 import { parseAntigravitySubagentToolInput } from '../../../shared/antigravity-subagent-tool-inputs'
@@ -9,33 +10,39 @@ import { brainBackgroundTaskSchema } from './antigravity-background-tasks'
 
 export const ANTIGRAVITY_BRAIN_NOTIFICATION = '_antigravity/brain_turn'
 
-const nonEmptyId = z.string().trim().min(1)
+const nonEmptyId = lazyZodSchema(() => z.string().trim().min(1))
 
-const rawOutputIdSchema = z.looseObject({
-  conversationId: nonEmptyId.optional(),
-  conversation_id: nonEmptyId.optional()
-})
+const rawOutputIdSchema = lazyZodSchema(() =>
+  z.looseObject({
+    conversationId: nonEmptyId.optional(),
+    conversation_id: nonEmptyId.optional()
+  })
+)
 
 const CONVERSATION_ID_LINE = /Conversation ID:\s*([A-Za-z0-9_-]+)/i
 const JSON_CONVERSATION_ID = /"conversationId"\s*:\s*"([A-Za-z0-9_-]+)"/
 
-const brainSubagentSchema = z.object({
-  id: nonEmptyId,
-  allOpen: z.literal(true).optional(),
-  state: z.enum(['working', 'idle', 'completed', 'failed', 'stopped', 'unverifiable']).optional(),
-  label: z.string().optional(),
-  result: z.string().optional(),
-  knownOnly: z.literal(true).optional(),
-  restart: z.literal(true).optional()
-})
+const brainSubagentSchema = lazyZodSchema(() =>
+  z.object({
+    id: nonEmptyId,
+    allOpen: z.literal(true).optional(),
+    state: z.enum(['working', 'idle', 'completed', 'failed', 'stopped', 'unverifiable']).optional(),
+    label: z.string().optional(),
+    result: z.string().optional(),
+    knownOnly: z.literal(true).optional(),
+    restart: z.literal(true).optional()
+  })
+)
 
-const brainTurnSchema = z.object({
-  turn: nonEmptyId.optional(),
-  started: z.boolean().optional(),
-  end: z.object({ stopReason: nonEmptyId }).optional(),
-  subagents: z.array(brainSubagentSchema).optional(),
-  backgroundTasks: z.array(brainBackgroundTaskSchema).optional()
-})
+const brainTurnSchema = lazyZodSchema(() =>
+  z.object({
+    turn: nonEmptyId.optional(),
+    started: z.boolean().optional(),
+    end: z.object({ stopReason: nonEmptyId }).optional(),
+    subagents: z.array(brainSubagentSchema).optional(),
+    backgroundTasks: z.array(brainBackgroundTaskSchema).optional()
+  })
+)
 
 export function antigravityNotification(
   method: string,

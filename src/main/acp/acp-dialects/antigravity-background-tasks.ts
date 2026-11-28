@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { lazyZodSchema } from '../../../shared/schema/lazy-zod-schema'
 import { isRecord } from '../../../shared/agent-status/child-work/agent-status-child-work-value-guards'
 import { BoundedMap } from '../../../shared/collections/bounded-map'
 import { isBackgroundTaskBlock } from '../../../shared/native-chat/native-chat-types'
@@ -11,20 +12,22 @@ import type { AcpBackgroundTaskUpdate } from './acp-dialect'
 const RECENT_EXECUTE_LIMIT = 32
 const TASK_ALIAS_LIMIT = 128
 
-export const brainBackgroundTaskSchema = z.object({
-  taskId: z.string().trim().min(1),
-  kind: z.enum(['command', 'monitor', 'workflow', 'unknown']).optional(),
-  label: z.string().optional(),
-  fallbackKind: z.enum(['command', 'monitor', 'workflow', 'unknown']).optional(),
-  fallbackLabel: z.string().optional(),
-  state: z.enum(['working', 'monitoring', 'waiting', 'done', 'blocked', 'idle', 'unverifiable']),
-  parentToolUseId: z.string().trim().min(1).optional(),
-  summary: z.string().optional(),
-  error: z.string().optional(),
-  outputFile: z.string().optional(),
-  startedAt: z.number().optional(),
-  settledAt: z.number().optional()
-})
+export const brainBackgroundTaskSchema = lazyZodSchema(() =>
+  z.object({
+    taskId: z.string().trim().min(1),
+    kind: z.enum(['command', 'monitor', 'workflow', 'unknown']).optional(),
+    label: z.string().optional(),
+    fallbackKind: z.enum(['command', 'monitor', 'workflow', 'unknown']).optional(),
+    fallbackLabel: z.string().optional(),
+    state: z.enum(['working', 'monitoring', 'waiting', 'done', 'blocked', 'idle', 'unverifiable']),
+    parentToolUseId: z.string().trim().min(1).optional(),
+    summary: z.string().optional(),
+    error: z.string().optional(),
+    outputFile: z.string().optional(),
+    startedAt: z.number().optional(),
+    settledAt: z.number().optional()
+  })
+)
 
 type TaskKind = 'command' | 'monitor' | 'workflow'
 
